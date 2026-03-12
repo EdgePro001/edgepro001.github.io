@@ -27,45 +27,74 @@ const projects: { name: string; desc: string; href: string; tags: string[] }[] =
         background: #0f0f0f;
         color: #e8e8e8;
         min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding: 4rem 1.5rem;
         line-height: 1.6;
       }
 
-      main {
-        width: 100%;
-        max-width: 640px;
+      .layout {
+        display: grid;
+        grid-template-columns: 240px 1fr;
+        min-height: 100vh;
+        max-width: 960px;
+        margin: 0 auto;
       }
 
-      /* Hero */
-      .hero { margin-bottom: 3rem; }
-      .hero h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 0.4rem; }
-      .hero .tagline { color: #888; font-size: 1rem; margin-bottom: 1rem; }
-      .hero .bio { color: #bbb; font-size: 0.95rem; max-width: 480px; }
-      .hero .location { color: #666; font-size: 0.85rem; margin-top: 0.4rem; }
+      /* Sidebar */
+      .sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        padding: 3rem 2rem;
+        border-right: 1px solid #1e1e1e;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
 
-      /* Links */
-      .links { display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap; }
+      .sidebar h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.3px; }
+      .sidebar .tagline { color: #666; font-size: 0.8rem; margin-top: 0.3rem; line-height: 1.5; }
+      .sidebar .location { color: #555; font-size: 0.8rem; margin-top: 0.5rem; }
+
+      .sidebar .bio {
+        color: #999;
+        font-size: 0.85rem;
+        margin-top: 1rem;
+        line-height: 1.6;
+        border-top: 1px solid #1e1e1e;
+        padding-top: 1rem;
+      }
+
+      .links {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: auto;
+      }
       .links a {
-        color: #e8e8e8;
+        color: #666;
         text-decoration: none;
-        font-size: 0.9rem;
-        border-bottom: 1px solid #444;
-        padding-bottom: 1px;
-        transition: border-color 0.2s, color 0.2s;
+        font-size: 0.85rem;
+        transition: color 0.2s;
       }
-      .links a:hover { color: #fff; border-color: #fff; }
+      .links a:hover { color: #e8e8e8; }
+
+      /* Main content */
+      .content {
+        padding: 3rem 2.5rem;
+      }
 
       /* Section */
       section { margin-bottom: 2.5rem; }
       section h2 {
-        font-size: 0.75rem;
+        font-size: 0.7rem;
         text-transform: uppercase;
         letter-spacing: 1.5px;
-        color: #555;
+        color: #444;
         margin-bottom: 1.2rem;
+      }
+
+      .empty {
+        color: #333;
+        font-size: 0.875rem;
       }
 
       /* Projects */
@@ -75,11 +104,11 @@ const projects: { name: string; desc: string; href: string; tags: string[] }[] =
         color: inherit;
         display: block;
         padding: 1rem 1.2rem;
-        border: 1px solid #222;
+        border: 1px solid #1e1e1e;
         border-radius: 8px;
         transition: border-color 0.2s, background 0.2s;
       }
-      .project a:hover { border-color: #444; background: #161616; }
+      .project a:hover { border-color: #333; background: #141414; }
       .project .proj-name { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.3rem; }
       .project .proj-desc { color: #888; font-size: 0.875rem; margin-bottom: 0.6rem; }
       .project .tags { display: flex; gap: 0.5rem; flex-wrap: wrap; }
@@ -93,45 +122,64 @@ const projects: { name: string; desc: string; href: string; tags: string[] }[] =
       }
 
       footer {
-        margin-top: auto;
-        padding-top: 3rem;
-        color: #444;
-        font-size: 0.8rem;
+        padding: 2rem 2.5rem;
+        color: #333;
+        font-size: 0.75rem;
+        border-top: 1px solid #1a1a1a;
+      }
+
+      /* Mobile */
+      @media (max-width: 640px) {
+        .layout { grid-template-columns: 1fr; }
+        .sidebar {
+          position: static;
+          height: auto;
+          border-right: none;
+          border-bottom: 1px solid #1e1e1e;
+          padding: 2rem 1.5rem;
+        }
+        .links { flex-direction: row; margin-top: 1.5rem; }
+        .content { padding: 2rem 1.5rem; }
       }
     </style>
   </head>
   <body>
-    <main>
-      <div class="hero">
+    <div class="layout">
+      <aside class="sidebar">
         <h1>{name}</h1>
         <p class="tagline">{tagline}</p>
-        <p class="bio">{bio}</p>
         <p class="location">{location}</p>
+        <p class="bio">{bio}</p>
         <nav class="links">
           {links.map(link => <a href={link.href} target="_blank" rel="noopener">{link.label}</a>)}
         </nav>
-      </div>
+      </aside>
 
-      {projects.length > 0 && (
-        <section>
-          <h2>Projects</h2>
-          <div class="projects">
-            {projects.map(p => (
-              <div class="project">
-                <a href={p.href} target="_blank" rel="noopener">
-                  <div class="proj-name">{p.name}</div>
-                  <div class="proj-desc">{p.desc}</div>
-                  <div class="tags">
-                    {p.tags.map(t => <span class="tag">{t}</span>)}
+      <div>
+        <main class="content">
+          {projects.length > 0 ? (
+            <section>
+              <h2>Projects</h2>
+              <div class="projects">
+                {projects.map(p => (
+                  <div class="project">
+                    <a href={p.href} target="_blank" rel="noopener">
+                      <div class="proj-name">{p.name}</div>
+                      <div class="proj-desc">{p.desc}</div>
+                      <div class="tags">
+                        {p.tags.map(t => <span class="tag">{t}</span>)}
+                      </div>
+                    </a>
                   </div>
-                </a>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </main>
-
-    <footer>© {new Date().getFullYear()} {name}</footer>
+            </section>
+          ) : (
+            <p class="empty">更多内容即将到来。</p>
+          )}
+        </main>
+        <footer>© {new Date().getFullYear()} {name}</footer>
+      </div>
+    </div>
   </body>
 </html>
