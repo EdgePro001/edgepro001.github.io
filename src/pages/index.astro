@@ -1,7 +1,8 @@
 ---
 const name = "Junxian Ma";
-const tagline = "Interested in Machine Learning & Artificial Intelligence";
-const bio = "CS student at Tsinghua University. Passionate about building intelligent systems.";
+const tagline = "Language Model · Agent · Reinforcement Learning";
+const bio = "CS student at Tsinghua University. My recent work centers on post-training for reasoning and alignment.";
+const location = "Beijing";
 
 const links = [
   { label: "GitHub", href: "https://github.com/EdgePro001" },
@@ -43,6 +44,7 @@ const projects: { name: string; desc: string; href: string; tags: string[] }[] =
       .hero h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 0.4rem; }
       .hero .tagline { color: #888; font-size: 1rem; margin-bottom: 1rem; }
       .hero .bio { color: #bbb; font-size: 0.95rem; max-width: 480px; }
+      .hero .location { color: #666; font-size: 0.85rem; margin-top: 0.4rem; }
 
       /* Links */
       .links { display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap; }
@@ -104,6 +106,7 @@ const projects: { name: string; desc: string; href: string; tags: string[] }[] =
         <h1>{name}</h1>
         <p class="tagline">{tagline}</p>
         <p class="bio">{bio}</p>
+        <p class="location">{location}</p>
         <nav class="links">
           {links.map(link => <a href={link.href} target="_blank" rel="noopener">{link.label}</a>)}
         </nav>
