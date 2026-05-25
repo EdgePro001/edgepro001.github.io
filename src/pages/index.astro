@@ -1,189 +1,87 @@
 ---
-const name = "Junxian Ma";
-const tagline = "Language Model · Agent · Reinforcement Learning";
-const bio = "CS student at Tsinghua University. My recent work centers on post-training for reasoning and alignment.";
-const location = "Beijing";
-
-const links = [
-  { label: "GitHub", href: "https://github.com/EdgePro001" },
-  { label: "Email", href: "mailto:junxianma93@gmail.com" },
-  { label: "CV", href: "/cv.pdf" },
-];
-
-const projects: { name: string; desc: string; href: string; tags: string[] }[] = [];
 ---
 
+<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={`${name} — ${tagline}`} />
-    <title>{name}</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
-    <style>
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-      body {
-        font-family: "JetBrains Mono", monospace;
-        background: #0f0f0f;
-        color: #e8e8e8;
-        min-height: 100vh;
-        line-height: 1.6;
-      }
-
-      .layout {
-        display: grid;
-        grid-template-columns: 240px 1fr;
-        min-height: 100vh;
-        max-width: 960px;
-        margin: 0 auto;
-      }
-
-      /* Sidebar */
-      .sidebar {
-        position: sticky;
-        top: 0;
-        height: 100vh;
-        padding: 3rem 2rem;
-        border-right: 1px solid #1e1e1e;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }
-
-      .sidebar h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.3px; }
-      .sidebar .tagline { color: #666; font-size: 0.8rem; margin-top: 0.3rem; line-height: 1.5; }
-      .sidebar .location { color: #555; font-size: 0.8rem; margin-top: 0.5rem; }
-
-      .sidebar .bio {
-        color: #999;
-        font-size: 0.85rem;
-        margin-top: 1rem;
-        line-height: 1.6;
-        border-top: 1px solid #1e1e1e;
-        padding-top: 1rem;
-      }
-
-      .links {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-        margin-top: auto;
-      }
-      .links a {
-        color: #666;
-        text-decoration: none;
-        font-size: 0.85rem;
-        transition: color 0.2s;
-      }
-      .links a:hover { color: #e8e8e8; }
-
-      /* Main content */
-      .content {
-        padding: 3rem 2.5rem;
-      }
-
-      /* Section */
-      section { margin-bottom: 2.5rem; }
-      section h2 {
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        color: #444;
-        margin-bottom: 1.2rem;
-      }
-
-      .empty {
-        color: #333;
-        font-size: 0.875rem;
-      }
-
-      /* Projects */
-      .projects { display: flex; flex-direction: column; gap: 1.2rem; }
-      .project a {
-        text-decoration: none;
-        color: inherit;
-        display: block;
-        padding: 1rem 1.2rem;
-        border: 1px solid #1e1e1e;
-        border-radius: 8px;
-        transition: border-color 0.2s, background 0.2s;
-      }
-      .project a:hover { border-color: #333; background: #141414; }
-      .project .proj-name { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.3rem; }
-      .project .proj-desc { color: #888; font-size: 0.875rem; margin-bottom: 0.6rem; }
-      .project .tags { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-      .project .tag {
-        font-size: 0.75rem;
-        color: #666;
-        background: #1a1a1a;
-        border: 1px solid #2a2a2a;
-        border-radius: 4px;
-        padding: 0.1rem 0.5rem;
-      }
-
-      footer {
-        padding: 2rem 2.5rem;
-        color: #333;
-        font-size: 0.75rem;
-        border-top: 1px solid #1a1a1a;
-      }
-
-      /* Mobile */
-      @media (max-width: 640px) {
-        .layout { grid-template-columns: 1fr; }
-        .sidebar {
-          position: static;
-          height: auto;
-          border-right: none;
-          border-bottom: 1px solid #1e1e1e;
-          padding: 2rem 1.5rem;
-        }
-        .links { flex-direction: row; margin-top: 1.5rem; }
-        .content { padding: 2rem 1.5rem; }
-      }
-    </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Junxian Ma - language models, agents, and reinforcement learning.">
+    <title>Junxian Ma</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/styles.css?v=7">
   </head>
   <body>
-    <div class="layout">
-      <aside class="sidebar">
-        <h1>{name}</h1>
-        <p class="tagline">{tagline}</p>
-        <p class="location">{location}</p>
-        <p class="bio">{bio}</p>
-        <nav class="links">
-          {links.map(link => <a href={link.href} target="_blank" rel="noopener">{link.label}</a>)}
-        </nav>
-      </aside>
+    <main class="container" aria-label="Junxian Ma personal homepage">
+      <p>
+        Heya, I'm Junxian Ma, aka EdgeP -
+        <a href="#about">About Me</a>
+        <a href="#writings">Writings</a>
+        <a href="#projects">Projects</a>
+        <a href="https://github.com/EdgePro001" rel="noreferrer">GitHub</a>
+        <a href="/cv.pdf">CV</a>
+      </p>
 
-      <div>
-        <main class="content">
-          {projects.length > 0 ? (
-            <section>
-              <h2>Projects</h2>
-              <div class="projects">
-                {projects.map(p => (
-                  <div class="project">
-                    <a href={p.href} target="_blank" rel="noopener">
-                      <div class="proj-name">{p.name}</div>
-                      <div class="proj-desc">{p.desc}</div>
-                      <div class="tags">
-                        {p.tags.map(t => <span class="tag">{t}</span>)}
-                      </div>
-                    </a>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : (
-            <p class="empty">更多内容即将到来。</p>
-          )}
-        </main>
-        <footer>© {new Date().getFullYear()} {name}</footer>
-      </div>
-    </div>
+      <p id="about">
+        I am a CS student at
+        <a href="https://www.tsinghua.edu.cn/en/" rel="noreferrer">Tsinghua University</a>.
+        My recent work centers on post-training for reasoning and alignment.
+      </p>
+
+      <p>
+        Research interests: language models, agents, reinforcement learning,
+        reasoning, and alignment.
+      </p>
+
+      <p>Here are some things I believe in:</p>
+      <ul class="beliefs-list">
+        <li>Reasoning models should be useful before they are impressive</li>
+        <li>Post-training is where many systems reveal their real shape</li>
+        <li>Agents need memory, taste, and restraint</li>
+        <li>Good research taste compounds when you write things down</li>
+        <li>Small tools can change the shape of a week</li>
+        <li>Clear thinking is often a design problem</li>
+      </ul>
+
+      <p>Here are some things I like:</p>
+      <ul>
+        <li>
+          Language models, small agents, reward signals, clean abstractions,
+          quiet libraries, fast feedback loops, command lines, elegant notes,
+          diagrams that explain themselves, and people who ask precise questions.
+        </li>
+      </ul>
+
+      <p id="projects">Things I am working on:</p>
+      <ul>
+        <li>
+          <a href="https://github.com/EdgePro001" rel="noreferrer">GitHub</a>:
+          code, notes, and unfinished ideas.
+        </li>
+        <li>
+          <a href="/cv.pdf">CV</a>:
+          a more formal snapshot of my work.
+        </li>
+        <li>
+          <a href="https://edgep.me">edgep.me</a>:
+          this small home on the internet.
+        </li>
+      </ul>
+
+      <p id="writings">Writings:</p>
+      <ul>
+        <li><a href="#">Notes on learning</a> <span class="muted">draft</span></li>
+        <li><a href="#">What I am paying attention to</a> <span class="muted">soon</span></li>
+      </ul>
+
+      <p>
+        I love thoughtful messages and usually write back.
+        <a href="mailto:junxianma93@gmail.com">Send me a message!</a>
+      </p>
+    </main>
+
+    <button class="theme-toggle" type="button" aria-label="Toggle color mode">Mode</button>
+    <button class="click-note" type="button" aria-label="Dismiss note">Click around.</button>
+    <script is:inline src="/script.js?v=7"></script>
   </body>
 </html>

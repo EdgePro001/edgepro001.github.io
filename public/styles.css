@@ -1,0 +1,227 @@
+@import url("https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400;1,500&display=swap");
+
+:root {
+  --background: #ffffff;
+  --text: #111111;
+  --secondary: #646464;
+  --bullet: #b8b8b8;
+  --link: #52525b;
+  --link-line: rgba(145, 145, 160, 0.5);
+  --note-bg: #fffdf5;
+  --note-border: rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme="dark"] {
+  --background: #121212;
+  --text: #e0e0e0;
+  --secondary: #a3a3a3;
+  --bullet: #5a5a5a;
+  --link: #cfcfcf;
+  --link-line: #6b6b6b;
+  --note-bg: #1a1a1a;
+  --note-border: #3b3d3e;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family: "Spectral", Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.container {
+  width: min(650px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 82px 0 72px;
+  position: relative;
+  z-index: 1;
+}
+
+p {
+  margin: 0 0 1em;
+}
+
+a {
+  color: var(--link);
+  font-weight: 400;
+  text-decoration: none;
+  border-bottom: 0.1em solid var(--link-line);
+  transition: border-color 180ms ease, color 180ms ease;
+}
+
+a:hover {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+
+ul {
+  margin: 0 0 1em;
+  padding-left: 1.2em;
+  list-style: disc;
+}
+
+li {
+  margin-bottom: 0.45em;
+}
+
+li::marker {
+  color: var(--bullet);
+}
+
+.beliefs-list {
+  column-count: 2;
+  column-gap: 2rem;
+}
+
+.beliefs-list li {
+  break-inside: avoid;
+}
+
+.muted {
+  color: var(--secondary);
+}
+
+.theme-toggle {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  padding: 3px 0;
+  border: 0;
+  border-bottom: 0.1em solid var(--link-line);
+  background: transparent;
+  color: var(--link);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.theme-toggle:hover,
+.theme-toggle:focus-visible {
+  color: var(--text);
+  border-bottom-color: var(--text);
+  outline: none;
+}
+
+.click-note {
+  position: fixed;
+  top: 42%;
+  left: calc(50% + 390px);
+  max-width: 210px;
+  padding: 9px 13px;
+  border: 1px solid var(--note-border);
+  border-radius: 6px;
+  background: var(--note-bg);
+  color: var(--text);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.14);
+  font-family: "Caveat", "Comic Sans MS", cursive;
+  font-size: 22px;
+  line-height: 1.1;
+  transform: rotate(-4deg);
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.click-note.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: rotate(-4deg) scale(0.98);
+}
+
+.float-note {
+  position: fixed;
+  padding: 7px 10px;
+  border: 1px solid var(--note-border);
+  border-radius: 6px;
+  background: var(--note-bg);
+  color: var(--secondary);
+  font-family: "Caveat", "Comic Sans MS", cursive;
+  font-size: 21px;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(-3deg);
+  animation: note-pop 2.4s ease forwards;
+}
+
+@keyframes note-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -42%) rotate(-3deg) scale(0.96);
+  }
+
+  15%,
+  78% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(-3deg) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -58%) rotate(-3deg) scale(0.98);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) {
+    --background: #121212;
+    --text: #e0e0e0;
+    --secondary: #a3a3a3;
+    --bullet: #5a5a5a;
+    --link: #cfcfcf;
+    --link-line: #6b6b6b;
+    --note-bg: #1a1a1a;
+    --note-border: #3b3d3e;
+  }
+}
+
+@media (max-width: 768px) {
+  body {
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .container {
+    width: min(100% - 40px, 650px);
+    padding-top: 44px;
+  }
+
+  .beliefs-list {
+    column-count: 1;
+  }
+
+  .click-note {
+    display: none;
+  }
+}
+
+@media (max-width: 1120px) {
+  .click-note {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .container {
+    width: min(100% - 32px, 650px);
+    padding-top: 34px;
+  }
+
+  .theme-toggle {
+    top: 10px;
+    right: 14px;
+    font-size: 14px;
+  }
+}
