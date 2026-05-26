@@ -133,6 +133,18 @@ li::marker {
   white-space: nowrap;
 }
 
+.language-tag,
+.draft-tag {
+  display: inline-block;
+  margin-left: 0.35em;
+  color: var(--secondary);
+  font-size: 0.82em;
+}
+
+.draft-tag {
+  color: #b8402a;
+}
+
 .post-header {
   margin: 1.6em 0 1.2em;
 }

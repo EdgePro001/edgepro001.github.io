@@ -2,7 +2,8 @@
 import { getCollection, render } from "astro:content";
 
 export async function getStaticPaths() {
-  const posts = (await getCollection("blog")).filter((post) => !post.data.draft);
+  const includeDrafts = import.meta.env.DEV;
+  const posts = (await getCollection("blog")).filter((post) => includeDrafts || !post.data.draft);
 
   return posts.map((post) => ({
     params: { slug: post.id },
@@ -12,6 +13,16 @@ export async function getStaticPaths() {
 
 const { post } = Astro.props;
 const { Content } = await render(post);
+const includeDrafts = import.meta.env.DEV;
+const allPosts = (await getCollection("blog")).filter((entry) => includeDrafts || !entry.data.draft);
+const translationKey = post.data.translationKey ?? post.id;
+const translations = allPosts.filter(
+  (entry) =>
+    entry.id !== post.id &&
+    (entry.data.translationKey ?? entry.id) === translationKey
+);
+
+const languageLabel = (lang: "en" | "zh") => (lang === "zh" ? "中文" : "English");
 
 const formatDate = (date: Date) =>
   date.toLocaleDateString("en", {
@@ -23,7 +34,7 @@ const formatDate = (date: Date) =>
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang={post.data.lang === "zh" ? "zh-CN" : "en"}>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -40,7 +51,22 @@ const formatDate = (date: Date) =>
 
       <header class="post-header">
         <h1>{post.data.title}</h1>
-        <p class="muted">{formatDate(post.data.date)}</p>
+        <p class="muted">
+          {formatDate(post.data.date)}
+          <span class="language-tag">{languageLabel(post.data.lang)}</span>
+          {post.data.draft && <span class="draft-tag">Draft</span>}
+        </p>
+        {translations.length > 0 && (
+          <p>
+            Also available in
+            {translations.map((entry, index) => (
+              <>
+                {index > 0 && " / "}
+                <a href={`/blog/${entry.id}/`}>{languageLabel(entry.data.lang)}</a>
+              </>
+            ))}
+          </p>
+        )}
       </header>
 
       <Content />

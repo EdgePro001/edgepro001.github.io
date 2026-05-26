@@ -1,9 +1,12 @@
 ---
 import { getCollection } from "astro:content";
 
+const includeDrafts = import.meta.env.DEV;
 const posts = (await getCollection("blog"))
-  .filter((post) => !post.data.draft)
+  .filter((post) => includeDrafts || !post.data.draft)
   .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+
+const languageLabel = (lang: "en" | "zh") => (lang === "zh" ? "中文" : "EN");
 
 const formatDate = (date: Date) =>
   date.toLocaleDateString("en", {
@@ -35,7 +38,9 @@ const formatDate = (date: Date) =>
           {posts.map((post) => (
             <li>
               <a href={`/blog/${post.id}/`}>{post.data.title}</a>
+              <span class="language-tag">{languageLabel(post.data.lang)}</span>
               <span class="muted">{formatDate(post.data.date)}</span>
+              {post.data.draft && <span class="draft-tag">Draft</span>}
               <p>{post.data.description}</p>
             </li>
           ))}
