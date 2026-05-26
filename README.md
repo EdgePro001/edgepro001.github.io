@@ -38,6 +38,21 @@ All commands are run from the root of the project, from a terminal:
 | `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
 | `npm run astro -- --help` | Get help using the Astro CLI                     |
 
+## Blog
+
+Posts live in `src/content/blog` as Markdown files. Each post needs frontmatter:
+
+```md
+---
+title: "Post Title"
+description: "Short summary for the blog index."
+date: 2026-05-26
+draft: false
+---
+```
+
+Set `draft: true` to keep a post out of the built site.
+
 ## 👀 Want to learn more?
 
 Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).

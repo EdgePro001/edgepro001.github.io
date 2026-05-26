@@ -1,0 +1,51 @@
+---
+import { getCollection } from "astro:content";
+
+const posts = (await getCollection("blog"))
+  .filter((post) => !post.data.draft)
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+
+const formatDate = (date: Date) =>
+  date.toLocaleDateString("en", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Writings by Junxian Ma.">
+    <title>Writings - Junxian Ma</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/styles.css?v=8">
+  </head>
+  <body>
+    <main class="container" aria-label="Writings by Junxian Ma">
+      <p>
+        <a href="/">Junxian Ma</a> / Writings
+      </p>
+
+      {posts.length > 0 ? (
+        <ul class="post-list">
+          {posts.map((post) => (
+            <li>
+              <a href={`/blog/${post.id}/`}>{post.data.title}</a>
+              <span class="muted">{formatDate(post.data.date)}</span>
+              <p>{post.data.description}</p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>No posts yet.</p>
+      )}
+    </main>
+
+    <button class="theme-toggle" type="button" aria-label="Toggle color mode">Mode</button>
+    <script is:inline src="/script.js?v=7"></script>
+  </body>
+</html>
