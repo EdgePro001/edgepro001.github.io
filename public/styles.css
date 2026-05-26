@@ -7,6 +7,7 @@
   --bullet: #b8b8b8;
   --link: #52525b;
   --link-line: rgba(145, 145, 160, 0.5);
+  --quiet-line: rgba(82, 82, 91, 0.16);
   --note-bg: #fffdf5;
   --note-border: rgba(0, 0, 0, 0.08);
 }
@@ -18,6 +19,7 @@ html[data-theme="dark"] {
   --bullet: #5a5a5a;
   --link: #cfcfcf;
   --link-line: #6b6b6b;
+  --quiet-line: rgba(207, 207, 207, 0.12);
   --note-bg: #1a1a1a;
   --note-border: #3b3d3e;
 }
@@ -41,6 +43,32 @@ body {
   font-size: 17px;
   line-height: 1.55;
   text-align: left;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: calc(50% - 416px);
+  width: 1px;
+  height: 100vh;
+  background: linear-gradient(to bottom, transparent 5%, var(--quiet-line) 22%, var(--quiet-line) 76%, transparent 94%);
+  pointer-events: none;
+}
+
+::selection {
+  background: rgba(145, 145, 160, 0.24);
+}
+
+.page-mark {
+  position: fixed;
+  top: 78px;
+  left: calc(50% - 520px);
+  width: 92px;
+  height: auto;
+  opacity: 0.46;
+  pointer-events: none;
+  user-select: none;
 }
 
 .container {
@@ -259,8 +287,16 @@ li::marker {
     --bullet: #5a5a5a;
     --link: #cfcfcf;
     --link-line: #6b6b6b;
+    --quiet-line: rgba(207, 207, 207, 0.12);
     --note-bg: #1a1a1a;
     --note-border: #3b3d3e;
+  }
+}
+
+@media (max-width: 1180px) {
+  .page-mark,
+  body::before {
+    display: none;
   }
 }
 
