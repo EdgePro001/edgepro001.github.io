@@ -25,7 +25,7 @@ const formatDate = (date: Date) =>
     <meta name="description" content="Writings by Junxian Ma.">
     <title>Writings - Junxian Ma</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=10">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -38,10 +38,14 @@ const formatDate = (date: Date) =>
         <ul class="post-list">
           {posts.map((post) => (
             <li>
-              <a href={`/blog/${post.id}/`}>{post.data.title}</a>
-              <span class="language-tag">{languageLabel(post.data.lang)}</span>
-              <span class="muted">{formatDate(post.data.date)}</span>
-              {post.data.draft && <span class="draft-tag">Draft</span>}
+              <p class="post-list-title">
+                <a href={`/blog/${post.id}/`}>{post.data.title}</a>
+              </p>
+              <p class="post-list-meta">
+                <span>{formatDate(post.data.date)}</span>
+                <span class="language-tag">{languageLabel(post.data.lang)}</span>
+                {post.data.draft && <span class="draft-tag">Draft</span>}
+              </p>
               <p>{post.data.description}</p>
             </li>
           ))}

@@ -2,7 +2,7 @@
 title: "First Note"
 description: "A small placeholder post to make the blog structure real."
 date: 2026-05-26
-draft: false
+draft: true
 lang: en
 translationKey: first-note
 ---

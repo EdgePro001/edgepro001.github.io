@@ -149,22 +149,31 @@ li::marker {
 }
 
 .post-list li {
-  margin-bottom: 1.15em;
+  margin-bottom: 1.5em;
 }
 
 .post-list p {
-  margin: 0.2em 0 0;
+  margin: 0.25em 0 0;
 }
 
-.post-list .muted {
-  margin-left: 0.35em;
-  white-space: nowrap;
+.post-list-title {
+  margin-bottom: 0;
+}
+
+.post-list-title a {
+  font-size: 1.08em;
+  line-height: 1.25;
+}
+
+.post-list-meta {
+  color: var(--secondary);
+  line-height: 1.2;
 }
 
 .language-tag,
 .draft-tag {
   display: inline-block;
-  margin-left: 0.35em;
+  margin-left: 0.45em;
   color: var(--secondary);
   font-size: 0.82em;
 }
