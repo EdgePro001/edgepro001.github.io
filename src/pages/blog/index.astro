@@ -3,8 +3,23 @@ import { getCollection } from "astro:content";
 
 const includeDrafts = import.meta.env.DEV;
 const posts = (await getCollection("blog"))
-  .filter((post) => includeDrafts || !post.data.draft)
-  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+  .filter((post) => includeDrafts || !post.data.draft);
+
+const groupedPosts = new Map<string, typeof posts>();
+
+for (const post of posts) {
+  const key = post.data.translationKey ?? post.id;
+  groupedPosts.set(key, [...(groupedPosts.get(key) ?? []), post]);
+}
+
+const postGroups = [...groupedPosts.values()]
+  .map((entries) => {
+    const variants = entries.sort((a, b) => (a.data.lang === "zh" ? -1 : 1) - (b.data.lang === "zh" ? -1 : 1));
+    const primary = variants.find((entry) => entry.data.lang === "zh") ?? variants[0];
+    const date = new Date(Math.max(...variants.map((entry) => entry.data.date.valueOf())));
+    return { date, primary, variants };
+  })
+  .sort((a, b) => b.date.valueOf() - a.date.valueOf());
 
 const languageLabel = (lang: "en" | "zh") => (lang === "zh" ? "中文" : "EN");
 
@@ -25,7 +40,7 @@ const formatDate = (date: Date) =>
     <meta name="description" content="Writings by Junxian Ma.">
     <title>Writings - Junxian Ma</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=10">
+    <link rel="stylesheet" href="/styles.css?v=11">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -34,19 +49,27 @@ const formatDate = (date: Date) =>
         <a href="/">Junxian Ma</a> / Writings
       </p>
 
-      {posts.length > 0 ? (
+      {postGroups.length > 0 ? (
         <ul class="post-list">
-          {posts.map((post) => (
+          {postGroups.map(({ date, primary, variants }) => (
             <li>
               <p class="post-list-title">
-                <a href={`/blog/${post.id}/`}>{post.data.title}</a>
+                <a href={`/blog/${primary.id}/`}>{primary.data.title}</a>
               </p>
               <p class="post-list-meta">
-                <span>{formatDate(post.data.date)}</span>
-                <span class="language-tag">{languageLabel(post.data.lang)}</span>
-                {post.data.draft && <span class="draft-tag">Draft</span>}
+                <span>{formatDate(date)}</span>
+                {primary.data.draft && <span class="draft-tag">Draft</span>}
               </p>
-              <p>{post.data.description}</p>
+              <p>{primary.data.description}</p>
+              {variants.length > 1 && (
+                <nav class="language-switch language-switch--compact" aria-label="Article language">
+                  {variants.map((entry) => (
+                    <a href={`/blog/${entry.id}/`} lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
+                      {languageLabel(entry.data.lang)}
+                    </a>
+                  ))}
+                </nav>
+              )}
             </li>
           ))}
         </ul>

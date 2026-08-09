@@ -22,6 +22,9 @@ const translations = allPosts.filter(
     entry.id !== post.id &&
     (entry.data.translationKey ?? entry.id) === translationKey
 );
+const variants = [post, ...translations].sort(
+  (a, b) => (a.data.lang === "zh" ? -1 : 1) - (b.data.lang === "zh" ? -1 : 1)
+);
 
 const languageLabel = (lang: "en" | "zh") => (lang === "zh" ? "中文" : "English");
 
@@ -41,8 +44,15 @@ const formatDate = (date: Date) =>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content={post.data.description}>
     <title>{post.data.title} - Junxian Ma</title>
+    {variants.map((entry) => (
+      <link
+        rel="alternate"
+        hreflang={entry.data.lang === "zh" ? "zh-CN" : "en"}
+        href={`/blog/${entry.id}/`}
+      />
+    ))}
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=11">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -55,19 +65,22 @@ const formatDate = (date: Date) =>
         <h1>{post.data.title}</h1>
         <p class="muted">
           {formatDate(post.data.date)}
-          <span class="language-tag">{languageLabel(post.data.lang)}</span>
           {post.data.draft && <span class="draft-tag">Draft</span>}
         </p>
-        {translations.length > 0 && (
-          <p>
-            Also available in
-            {translations.map((entry, index) => (
-              <>
-                {index > 0 && " / "}
-                <a href={`/blog/${entry.id}/`}>{languageLabel(entry.data.lang)}</a>
-              </>
-            ))}
-          </p>
+        {variants.length > 1 && (
+          <nav class="language-switch" aria-label="Article language">
+            {variants.map((entry) =>
+              entry.id === post.id ? (
+                <span class="is-active" aria-current="page" lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
+                  {languageLabel(entry.data.lang)}
+                </span>
+              ) : (
+                <a href={`/blog/${entry.id}/`} lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
+                  {languageLabel(entry.data.lang)}
+                </a>
+              )
+            )}
+          </nav>
         )}
       </header>
 

@@ -178,6 +178,50 @@ li::marker {
   font-size: 0.82em;
 }
 
+.language-switch {
+  display: inline-flex;
+  margin: 0.55em 0 0.2em;
+  overflow: hidden;
+  border: 1px solid var(--link-line);
+  border-radius: 999px;
+  line-height: 1;
+}
+
+.language-switch a,
+.language-switch span {
+  min-width: 72px;
+  padding: 0.48em 0.8em;
+  color: var(--secondary);
+  font-family: "Spectral", Georgia, "Times New Roman", serif;
+  font-size: 0.82em;
+  text-align: center;
+  text-decoration: none;
+  border: 0;
+}
+
+.language-switch a + a,
+.language-switch a + span,
+.language-switch span + a {
+  border-left: 1px solid var(--link-line);
+}
+
+.language-switch a:hover,
+.language-switch a:focus-visible {
+  color: var(--text);
+  background: var(--note-bg);
+  outline: none;
+}
+
+.language-switch .is-active {
+  color: var(--text);
+  background: var(--note-bg);
+  font-weight: 500;
+}
+
+.language-switch--compact {
+  margin-top: 0.25em;
+}
+
 .draft-tag {
   color: #b8402a;
 }
