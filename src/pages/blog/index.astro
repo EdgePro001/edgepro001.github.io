@@ -28,6 +28,9 @@ const formatDate = (date: Date) =>
     day: "numeric",
     timeZone: "UTC",
   });
+
+const categoryLabel = (category: "technical" | "reflection") =>
+  category === "technical" ? "Technical" : "Reflection";
 ---
 
 <!doctype html>
@@ -38,7 +41,7 @@ const formatDate = (date: Date) =>
     <meta name="description" content="Writings by Junxian Ma.">
     <title>Writings - Junxian Ma</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=12">
+    <link rel="stylesheet" href="/styles.css?v=13">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -52,10 +55,18 @@ const formatDate = (date: Date) =>
           {postGroups.map(({ date, primary }) => (
             <li>
               <p class="post-list-title">
-                <a href={`/blog/${primary.id}/`}>{primary.data.title}</a>
+                <a
+                  class={`post-title--${primary.data.category}`}
+                  href={`/blog/${primary.id}/`}
+                >
+                  {primary.data.title}
+                </a>
               </p>
               <p class="post-list-meta">
                 <span>{formatDate(date)}</span>
+                <span class={`post-category post-category--${primary.data.category}`}>
+                  {categoryLabel(primary.data.category)}
+                </span>
                 {primary.data.draft && <span class="draft-tag">Draft</span>}
               </p>
               <p>{primary.data.description}</p>

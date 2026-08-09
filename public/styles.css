@@ -10,6 +10,8 @@
   --quiet-line: rgba(82, 82, 91, 0.16);
   --note-bg: #fffdf5;
   --note-border: rgba(0, 0, 0, 0.08);
+  --technical: #234f78;
+  --reflection: #71383a;
 }
 
 html[data-theme="dark"] {
@@ -22,6 +24,8 @@ html[data-theme="dark"] {
   --quiet-line: rgba(207, 207, 207, 0.12);
   --note-bg: #1a1a1a;
   --note-border: #3b3d3e;
+  --technical: #82a9cf;
+  --reflection: #c98c8d;
 }
 
 *,
@@ -165,9 +169,40 @@ li::marker {
   line-height: 1.25;
 }
 
+.post-list-title a.post-title--technical,
+.post-list-title a.post-title--technical:hover,
+.post-list-title a.post-title--technical:focus-visible,
+.post-category--technical {
+  color: var(--technical);
+}
+
+.post-list-title a.post-title--reflection,
+.post-list-title a.post-title--reflection:hover,
+.post-list-title a.post-title--reflection:focus-visible,
+.post-category--reflection {
+  color: var(--reflection);
+}
+
+.post-list-title a.post-title--technical:hover,
+.post-list-title a.post-title--technical:focus-visible {
+  border-bottom-color: var(--technical);
+}
+
+.post-list-title a.post-title--reflection:hover,
+.post-list-title a.post-title--reflection:focus-visible {
+  border-bottom-color: var(--reflection);
+}
+
 .post-list-meta {
   color: var(--secondary);
   line-height: 1.2;
+}
+
+.post-category {
+  display: inline-block;
+  margin-left: 0.6em;
+  font-size: 0.82em;
+  font-weight: 500;
 }
 
 .language-tag,
@@ -383,6 +418,8 @@ li::marker {
     --quiet-line: rgba(207, 207, 207, 0.12);
     --note-bg: #1a1a1a;
     --note-border: #3b3d3e;
+    --technical: #82a9cf;
+    --reflection: #c98c8d;
   }
 }
 

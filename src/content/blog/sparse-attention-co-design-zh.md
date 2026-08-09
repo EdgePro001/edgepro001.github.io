@@ -5,6 +5,7 @@ date: 2026-08-10
 draft: false
 lang: zh
 translationKey: sparse-attention-co-design
+category: technical
 ---
 
 ## 1. Opening
