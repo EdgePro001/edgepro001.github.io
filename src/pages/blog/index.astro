@@ -15,7 +15,7 @@ for (const post of posts) {
 const postGroups = [...groupedPosts.values()]
   .map((entries) => {
     const variants = entries.sort((a, b) => (a.data.lang === "zh" ? -1 : 1) - (b.data.lang === "zh" ? -1 : 1));
-    const primary = variants.find((entry) => entry.data.lang === "zh") ?? variants[0];
+    const primary = variants.find((entry) => entry.data.lang === "en") ?? variants[0];
     const date = new Date(Math.max(...variants.map((entry) => entry.data.date.valueOf())));
     return { date, primary };
   })
