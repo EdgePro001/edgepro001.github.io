@@ -218,8 +218,12 @@ li::marker {
   font-weight: 500;
 }
 
-.language-switch--compact {
-  margin-top: 0.25em;
+.language-switch--floating {
+  position: fixed;
+  z-index: 2;
+  top: 14px;
+  right: 84px;
+  margin: 0;
 }
 
 .draft-tag {
@@ -425,6 +429,11 @@ li::marker {
     top: 10px;
     right: 14px;
     font-size: 14px;
+  }
+
+  .language-switch--floating {
+    top: 7px;
+    right: 70px;
   }
 
   .post img {

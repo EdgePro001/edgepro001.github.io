@@ -52,7 +52,7 @@ const formatDate = (date: Date) =>
       />
     ))}
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=11">
+    <link rel="stylesheet" href="/styles.css?v=12">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -67,26 +67,26 @@ const formatDate = (date: Date) =>
           {formatDate(post.data.date)}
           {post.data.draft && <span class="draft-tag">Draft</span>}
         </p>
-        {variants.length > 1 && (
-          <nav class="language-switch" aria-label="Article language">
-            {variants.map((entry) =>
-              entry.id === post.id ? (
-                <span class="is-active" aria-current="page" lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
-                  {languageLabel(entry.data.lang)}
-                </span>
-              ) : (
-                <a href={`/blog/${entry.id}/`} lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
-                  {languageLabel(entry.data.lang)}
-                </a>
-              )
-            )}
-          </nav>
-        )}
       </header>
 
       <Content />
     </main>
 
+    {variants.length > 1 && (
+      <nav class="language-switch language-switch--floating" aria-label="Article language">
+        {variants.map((entry) =>
+          entry.id === post.id ? (
+            <span class="is-active" aria-current="page" lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
+              {languageLabel(entry.data.lang)}
+            </span>
+          ) : (
+            <a href={`/blog/${entry.id}/`} lang={entry.data.lang === "zh" ? "zh-CN" : "en"}>
+              {languageLabel(entry.data.lang)}
+            </a>
+          )
+        )}
+      </nav>
+    )}
     <button class="theme-toggle" type="button" aria-label="Toggle color mode">Mode</button>
     <script is:inline src="/script.js?v=7"></script>
   </body>
