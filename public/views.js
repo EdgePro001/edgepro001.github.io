@@ -11,7 +11,9 @@
         { cache: "no-store" },
       );
 
-      if (!response.ok) return;
+      // GoatCounter returns a JSON count of zero with HTTP 404 until a new path has
+      // its first persisted visit. Treat that as a valid public counter response.
+      if (!response.ok && response.status !== 404) return;
 
       const data = await response.json();
       if (!data || typeof data.count !== "string") return;
