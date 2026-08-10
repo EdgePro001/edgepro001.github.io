@@ -205,6 +205,13 @@ li::marker {
   font-weight: 500;
 }
 
+.view-count {
+  display: inline-block;
+  margin-left: 0.6em;
+  color: var(--secondary);
+  font-size: 0.82em;
+}
+
 .language-tag,
 .draft-tag {
   display: inline-block;

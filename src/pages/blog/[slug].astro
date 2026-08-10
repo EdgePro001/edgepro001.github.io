@@ -17,6 +17,7 @@ const { Content } = await render(post);
 const includeDrafts = import.meta.env.DEV;
 const allPosts = (await getCollection("blog")).filter((entry) => includeDrafts || !entry.data.draft);
 const translationKey = post.data.translationKey ?? post.id;
+const viewKey = `/blog/${translationKey}`;
 const translations = allPosts.filter(
   (entry) =>
     entry.id !== post.id &&
@@ -52,7 +53,7 @@ const formatDate = (date: Date) =>
       />
     ))}
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=13">
+    <link rel="stylesheet" href="/styles.css?v=14">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -65,6 +66,7 @@ const formatDate = (date: Date) =>
         <h1>{post.data.title}</h1>
         <p class="muted">
           {formatDate(post.data.date)}
+          <span class="view-count" data-view-key={viewKey} hidden></span>
           {post.data.draft && <span class="draft-tag">Draft</span>}
         </p>
       </header>
@@ -88,6 +90,19 @@ const formatDate = (date: Date) =>
       </nav>
     )}
     <button class="theme-toggle" type="button" aria-label="Toggle color mode">Mode</button>
+    <script is:inline define:vars={{ viewKey }}>
+      window.goatcounter = {
+        path: function () {
+          return viewKey;
+        },
+      };
+    </script>
+    <script
+      data-goatcounter="https://edgep.goatcounter.com/count"
+      async
+      src="https://gc.zgo.at/count.js"
+    ></script>
+    <script defer src="/views.js?v=1"></script>
     <script is:inline src="/script.js?v=7"></script>
   </body>
 </html>

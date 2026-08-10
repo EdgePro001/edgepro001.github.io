@@ -41,7 +41,7 @@ const categoryLabel = (category: "technical" | "reflection") =>
     <meta name="description" content="Writings by Junxian Ma.">
     <title>Writings - Junxian Ma</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=13">
+    <link rel="stylesheet" href="/styles.css?v=14">
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
@@ -67,6 +67,11 @@ const categoryLabel = (category: "technical" | "reflection") =>
                 <span class={`post-category post-category--${primary.data.category}`}>
                   {categoryLabel(primary.data.category)}
                 </span>
+                <span
+                  class="view-count"
+                  data-view-key={`/blog/${primary.data.translationKey ?? primary.id}`}
+                  hidden
+                ></span>
                 {primary.data.draft && <span class="draft-tag">Draft</span>}
               </p>
               <p>{primary.data.description}</p>
@@ -79,6 +84,7 @@ const categoryLabel = (category: "technical" | "reflection") =>
     </main>
 
     <button class="theme-toggle" type="button" aria-label="Toggle color mode">Mode</button>
+    <script defer src="/views.js?v=1"></script>
     <script is:inline src="/script.js?v=7"></script>
   </body>
 </html>
