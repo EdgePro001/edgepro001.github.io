@@ -1,6 +1,6 @@
 ---
 title: "Sparse Attention: Algorithm–Infra Co-design"
-description: "From block-level selection in NSA to token-level selection in DSA: a shape-by-shape derivation through GPU program ownership, memory movement, and backward reduction."
+description: "How NSA creates regularity before the load, how DSA reconstructs it afterward, and why Discovery can still grow quadratically behind a sparse main kernel."
 date: 2026-08-10
 draft: false
 lang: en
@@ -11,302 +11,106 @@ category: technical
 
 ## 1. Opening
 
-The article follows one analytical lens:
+Sparse Attention is easy to write down. The hard part begins when the selected KV
+entries no longer form a regular matrix: how should a GPU load them, compute with
+them, and reduce their gradients? NSA and DSA answer that question through two
+different co-design paths.
 
-> **First rewrite the algorithm as tensor dataflow in which every dimension and
-> dependency is explicit. Then trace how those logical tensors become tiles that one
-> GPU program can own, move, and compute.**
+1. **NSA creates regularity before the load.** Contiguous 64-token blocks and
+   16-head shared selection let the algorithm map directly to a regular tile.
+2. **DSA reconstructs regularity after the load.** All 128 main heads share the
+   selected token IDs, and FlashMLA moves scattered rows into SMEM before computing
+   on them. The cost is that candidate discovery—Indexer plus Top-K—can still grow
+   quadratically.
 
-Following that chain, we derive the algorithmic dataflow and kernel mapping of NSA and
-DSA, then use two focused H100 experiments to test questions that arise naturally from
-the implementation analysis. Five connected conclusions emerge.
+Together they lead to the central claim of this article:
 
-1. **A sparsity ratio is not an execution plan.** It says how many query–KV
-   interactions remain in the logical algorithm, but not how much work is required to
-   discover, represent, and execute them. Selector/Top-K, metadata, indirect KV loads,
-   load reuse, backward many-to-one reduction, and whether these operations can be
-   reorganized into regular MMA tiles all enter the real cost.
-2. **NSA creates regularity before the load.** One selection ID names a logically
-   contiguous 64-token interval. The bases of different selected blocks may still be
-   scattered, but the 64 rows inside a block can be expanded from one base with affine
-   offsets instead of carrying one indirect index per token. The 16 query heads in a KV
-   group also share the same IDs. The FLA community implementation audited here maps
-   these two axes directly to a $[\text{query heads},\text{KV tokens}]=[16,64]$
-   interaction tile.
-3. **Forward and backward need different sparse graphs and different infrastructure.**
-   Query-centric ownership gives $O^{\mathrm{slc}}$ and
-   $dQ^{\mathrm{slc}}$ a unique owner, but
-   $dK^{\mathrm{slc}}/dV^{\mathrm{slc}}$ must reduce contributions from every query
-   that selected the same KV block. The FLA community path transposes the forward
-   adjacency `query → selected blocks` into CSR-form
-   `KV block → selecting queries`, then makes one KV-block program the unique
-   writer of the corresponding gradients. This avoids floating-point atomics and
-   partial-gradient buffers, at the cost of CSR construction, discrete query gathers,
-   variable fan-in, and CTA load imbalance.
-4. **DSA reconstructs regularity after the load.** Final selection is fully dynamic at
-   token granularity, but the 128 main heads do not maintain 128 unrelated address
-   sets: for one query, they share the same Top-2048 IDs. The public H100
-   sparse-prefill kernel uses two CTAs for those heads. Each CTA handles 64 heads and
-   reuses every selected row 64 times after moving it into SMEM, so only the producer
-   faces scattered global-memory row bases while Tensor Core consumers still see a
-   regular $[64,576]$ tile. In our frozen
-   $T_Q=128,\kappa=2048$ microbenchmark, eight prespecified random permutations of an
-   otherwise identical selected set differ from ascending order by only
-   $0.10\%$–$0.47\%$ in point estimate, and every paired 95% CI includes 1. The
-   concentration sweep is non-monotonic; only 2K/4K tight windows show sub-percent
-   pointwise signals. This says the kernel is robust to the tested patterns at this
-   operating point—not that random memory access is free.
-5. **DSA does not eliminate $O(L^2)$.**
+> **A sparsity ratio tells us only how much computation was removed. Actual speed
+> depends on whether the selected data can be moved and reused regularly—and on how
+> much work it takes to discover that data in the first place.**
 
-   **Algorithmically,** for a causal sequence of length $L$, the Lightning Indexer
-   still scores all causal query–history pairs:
+We first establish a common way to read tensors and tiles, then derive the algorithmic
+dataflow, kernel ownership, and memory movement of NSA and DSA. Two H100 experiments
+appear only where they answer a specific question: one tests how sensitive the DSA
+sparse kernel is to selected-row address patterns; the other tests how the quadratic
+Discovery term hidden behind the sparse main kernel grows with context length.
 
-   $$
-   \frac{L(L+1)}{2}=\Theta(L^2).
-   $$
+This article does not re-explain dense Attention or FlashAttention. It begins where
+block IDs and token IDs are produced and asks how a kernel consumes them. `[PAPER]`,
+`[CODE]`, `[DERIVATION]`, and `[MEASURED]` mark claims from papers, public code,
+our derivations, and formal measurements.
 
-   Exact Top-K in the public unfused path must also scan an FP32 score carrier that
-   grows with context. Fixing $\kappa=2048$ limits the high-dimensional main
-   Attention to $\Theta(L\kappa)$ pairs; it does not make the complete DSA Attention
-   module linear.
+## 2. Three Concepts Are Enough to Read the Rest
 
-   **Operationally,** in our frozen public-component chain on one H100 with
-   $B=1,C=4096,\kappa=2048$, cumulative causal-prefill Discovery is
-   $0.727\times$, $1.267\times$, and $33.60\times$ the FlashMLA time at 32K,
-   64K, and 2M. The first prespecified Discovery-dominant checkpoint is 64K, so
-   the measured discrete bracket is $[32\mathrm K,64\mathrm K]$ without
-   interpolation. From 256K to 2M, the endpoint effective exponents are 2.027 for
-   Discovery and 1.031 for sparse prefill. This operating point exposes the hidden
-   quadratic term; it does not imply a universal 64K crossover in production DSA.
+Many shapes appear below, but the reading method has only three parts.
 
-The central thesis can therefore be compressed into two sentences:
+A **program** is one independent Triton kernel instance; in CUDA terminology it is
+roughly one **CTA (thread block)**. SMEM is on-chip memory shared within a CTA.
+HBM/global memory is larger and slower device memory.
 
-> **Sparsity becomes executable when the algorithm exposes a reuse axis that one
-> GPU program can own. Whether it becomes speed depends on the cost of discovering,
-> regularizing, and reducing that sparsity.**
+**First, a logical tensor is not necessarily an HBM tensor.** One Attention row has
 
-This article does not re-explain naive dense Attention or FlashAttention. We begin
-farther downstream: when the algorithm hands a kernel block IDs or token IDs rather
-than regular matrices, how does the GPU actually execute them?
-
-To keep evidence boundaries explicit, the article uses six labels only where needed:
-`[PAPER]` for statements from papers, `[CODE]` for official public code,
-`[CODE/community]` for feasible paths shown by community implementations,
-`[DERIVATION]` for consequences of declared shapes, dtypes, or execution order,
-`[MEASURED]` for formal measurements in frozen environments, and `[GAP]`
-for information that remains unavailable. The original high-performance NSA kernels
-are not fully public, so code-level backward analysis is explicitly attributed to the
-community implementation. DSA's Indexer scorer and FlashMLA sparse-forward kernel are
-public, but production Indexer–Top-K fusion, complete runtime orchestration, and
-training backward remain unavailable. Nsight results below are diagnostic evidence;
-they never replace formal CUDA-event latency.
-
-## 2. A Unified Tensor Lens: From Logical Matrices to Executable Tiles
-
-> **Takeaway.** What matters most below is not simply “how large a matrix is,” but the distinction among tensors that exist logically in the algorithm, tensors that are actually written to HBM, and tiles consumed by one CTA/program.
-
-Unless stated otherwise, we omit the batch axis and use conceptual token-major shapes:
-
-| Symbol | Meaning |
-|---|---|
-| $T_Q,T_K$ | numbers of query and KV tokens in the current invocation |
-| $T$ | full sequence length in causal self-attention |
-| $H_q,H_{kv}$ | numbers of query heads and KV heads/groups |
-| $G=H_q/H_{kv}$ | number of query heads served by one KV head/group |
-| $t,h$ | query-token position and query-head ID |
-| $r=(t,h)$ | one independent Attention softmax row |
-| $g(h)=\lfloor h/G\rfloor$ | KV head/group used by query head $h$ in GQA |
-| $d_k,d_v$ | Q/K and V/O dimensions per head |
-| $B_R,B_{\mathrm{kv}}$ | number of softmax rows and KV-token tile length owned by one program |
-| $\alpha$ | Attention-score scale |
-
-We count one FMA as 2 FLOPs. Unless otherwise noted, byte counts assume BF16, or 2 bytes per element. Analytical byte counts exclude cache-line overfetch, allocator overhead, pages/TLB, and inter-device communication.
-
-**Logical shape.** Fix one query head $h\in[0,H_q)$. Under GQA, it uses KV
-head/group $g(h)$:
 $$
-Q^{(h)}:[T_Q,d_k],\qquad
-K^{(g(h))}:[T_K,d_k],\qquad
-V^{(g(h))}:[T_K,d_v].
+Q:[1,d_k],\quad K:[T_K,d_k],\quad V:[T_K,d_v],
 $$
 
-The mathematical semantics are
+and logically produces $S,P:[1,T_K]$ and $O:[1,d_v]$. This does not mean that $S$
+or $P$ must be written to HBM. We will distinguish the **logical shape** defined by
+the algorithm, the **materialized shape** preserved across kernels, and the **tile
+shape** processed by one CTA/program.
+
+**Second, every output needs an explicit owner.** Here the owner is the program that
+ultimately writes that output region. Suppose one program owns $B_R$ softmax rows and
+streams over $B_{\mathrm{kv}}$ KV entries at a time:
+
+$$
+Q_i:[B_R,d_k],\quad
+K_j:[B_{\mathrm{kv}},d_k],\quad
+V_j:[B_{\mathrm{kv}},d_v].
+$$
+
+With score scale $\alpha$, the local work is always two regular matrix products:
 
 $$
 \begin{aligned}
-S^{(h)}
-&=\alpha Q^{(h)}(K^{(g(h))})^\top,
-&
-[T_Q,d_k][d_k,T_K]
-&\rightarrow[T_Q,T_K],\\
-P^{(h)}
-&=\operatorname{softmax}_{T_K}(S^{(h)}),
-&
-[T_Q,T_K]
-&\rightarrow[T_Q,T_K],\\
-O^{(h)}
-&=P^{(h)}V^{(g(h))},
-&
-[T_Q,T_K][T_K,d_v]
-&\rightarrow[T_Q,d_v].
+S_{ij}&=\alpha Q_iK_j^\top:
+[B_R,d_k][d_k,B_{\mathrm{kv}}]\rightarrow[B_R,B_{\mathrm{kv}}],\\
+\Delta O_i&=\widetilde P_{ij}V_j:
+[B_R,B_{\mathrm{kv}}][B_{\mathrm{kv}},d_v]\rightarrow[B_R,d_v].
 \end{aligned}
 $$
 
-We omit causal and sparse-selection masks here; every invisible position is treated as
-$-\infty$ before softmax.
-
-$S/P:[T_Q,T_K]$ is first and foremost a **logical shape**: it defines which inputs each output depends on. It does not imply that the kernel must write the complete score or probability tensor to HBM. Throughout the article, we distinguish three layers:
-
-1. **logical shape**: the complete relation in the algorithm's semantics;
-2. **materialized shape**: a tensor actually written to HBM for another kernel to read;
-3. **tile shape**: the local working set that one CTA/program brings on-chip and feeds to MMA.
-
-**Tile shape.** A kernel may tile along query tokens, or it may let several query heads
-share one KV tile. We therefore use $B_R$ for the number of independent softmax rows
-owned by the program instead of assuming that the row axis always means query tokens.
-Let $i$ denote this row tile and $j$ the current KV tile:
-$$
-Q_i:[B_R,d_k],\qquad
-K_j:[B_{\mathrm{kv}},d_k],\qquad
-V_j:[B_{\mathrm{kv}},d_v],
-$$
-
-where all $B_R$ rows must be able to share the current $K_j,V_j$. This is the reuse
-axis exposed by NSA and DSA. The two local contractions are:
+The program keeps only the online-softmax state for the rows it owns:
 
 $$
-\begin{aligned}
-S_{ij}
-&=\alpha Q_iK_j^\top,
-&[B_R,d_k][d_k,B_{\mathrm{kv}}]
-&\rightarrow[B_R,B_{\mathrm{kv}}],\\
-\Delta O_i
-&=\widetilde P_{ij}V_j,
-&[B_R,B_{\mathrm{kv}}][B_{\mathrm{kv}},d_v]
-&\rightarrow[B_R,d_v].
-\end{aligned}
+m,z:[B_R],\qquad O_{\mathrm{acc}}:[B_R,d_v].
 $$
 
-At the algorithmic level, NSA and DSA differ in how $K_j,V_j$ are selected. At the
-infrastructure level, they differ in how the tile is moved on-chip and who reuses that
-load. When rows mean query tokens, $B_R$ is the query-token tile length. In NSA
-selection forward, $B_R=G=16$; in a FlashMLA head64 CTA, $B_R=B_H=64$.
+As each KV tile arrives, it updates the row-wise maximum $m$, rescales the old $z$
+and $O_{\mathrm{acc}}$ to the new maximum, and accumulates the current probabilities
+and value numerator. Selected blocks or rows can therefore stream in without
+materializing the complete probability matrix.
 
-**Online softmax.** As long as one program exclusively owns these $B_R$ softmax rows,
-it can retain three states:
-$$
-m:[B_R],\qquad
-z:[B_R],\qquad
-O_{\rm acc}:[B_R,d_v].
-$$
+**Third, the key question is not only “how much was skipped?” but “where does
+irregularity stop?”** For each path we track four things:
 
-Initialize
+1. how selection is produced and whether it materializes an intermediate tensor;
+2. what output one program owns;
+3. how many rows or heads reuse one KV load;
+4. where a dynamic index becomes a regular tile again.
 
-$$
-m^{(0)}=-\infty,\qquad z^{(0)}=0,\qquad O_{\rm acc}^{(0)}=0.
-$$
+We count one FMA as 2 FLOPs. Unless noted otherwise, byte counts use BF16 useful
+payload; cache-line overfetch, page/TLB behavior, and allocator effects are discussed
+where they matter.
 
-$m$ is the row-wise maximum over visited logits, $z$ is the exponential sum relative
-to $m$, and $O_{\rm acc}$ is the value numerator under the same reference point.
-When a new score tile $S_{ij}:[B_R,B_{\mathrm{kv}}]$ arrives, compute
+## 3. NSA: Make the Algorithm Produce an Executable Block Workload
 
-$$
-\widehat m_j
-=\max_{b=0,\ldots,B_{\mathrm{kv}}-1}S_{ij}[:,b]
-\in\mathbb R^{B_R},
-$$
+> **Takeaway.** NSA is not efficient merely because it “selects 16 blocks.” Each ID
+> names 64 contiguous tokens, and all 16 heads in one KV group share those IDs. The
+> algorithm therefore already produces something close to a regular $[16,64]$
+> interaction tile.
 
-$$
-m_{\rm new}=\max(m_{\rm old},\widehat m_j)
-\in\mathbb R^{B_R},
-$$
-
-and rescale the old state to this new row-wise maximum:
-
-$$
-\rho=\exp(m_{\rm old}-m_{\rm new})
-\in\mathbb R^{B_R}.
-$$
-
-The unnormalized weights of the current tile are
-
-$$
-\widetilde P_{ij}
-=\exp\!\left(S_{ij}-m_{\rm new}[:,\mathrm{None}]\right)
-\in\mathbb R^{B_R\times B_{\mathrm{kv}}}.
-$$
-
-The state update is then
-
-$$
-z_{\rm new}
-=\rho z_{\rm old}
-+\sum_{b=0}^{B_{\mathrm{kv}}-1}\widetilde P_{ij}[:,b]
-\in\mathbb R^{B_R},
-$$
-
-$$
-O_{{\rm acc},{\rm new}}
-=\rho[:,\mathrm{None}]O_{{\rm acc},{\rm old}}
-+\widetilde P_{ij}V_j
-\in\mathbb R^{B_R\times d_v}.
-$$
-
-After all KV tiles:
-
-$$
-O_i
-=
-\frac{O_{\rm acc}}{z[:,\mathrm{None}]}
-\in\mathbb R^{B_R\times d_v},\qquad
-\operatorname{LSE}_i=m+\log z
-\in\mathbb R^{B_R}.
-$$
-
-Selected blocks or rows may therefore be visited in batches without materializing the
-complete $P$. In exact arithmetic, changing the order of KV tiles does not change the
-mathematical result; in finite precision, reduction order can introduce small numerical
-differences. NSA and DSA change which KV tiles enter this stream, not softmax semantics.
-
-From this point onward, we repeatedly ask five questions about each sparse path:
-
-1. **Stage/materialization:** Which tensors exist only logically, and which cross a
-   kernel boundary through HBM?
-2. **Grid/ownership:** How many programs are in the grid? Which output rows does one
-   program own, and who holds $m,z,O_{\rm acc}$?
-3. **Tile/reuse:** What tile does the program consume? How many query rows or heads
-   reuse each KV row or tile moved on-chip?
-4. **Irregularity boundary:** Where does the dynamic index appear, and where is it
-   rearranged into a regular tile?
-5. **Full cost:** What remains in the selector, Top-K, metadata, gather, load balance,
-   and backward reduction?
-
-The two algorithms provide complementary answers:
-
-$$
-\boxed{
-\begin{aligned}
-\text{NSA: }&
-\text{Before the HBM load, constrain the sparse relation to contiguous token blocks;}\\
-\text{DSA: }&
-\text{Retain token-level indirect addressing, then reconstruct regular tiles in SMEM after the load.}
-\end{aligned}}
-$$
-
-## 3. NSA: Make the Algorithm Produce Executable Block Workloads
-
-> **Takeaway.** Native Sparse Attention (NSA) makes each selection ID point to a contiguous 64-token interval, allowing the semantic block to be decomposed into an integer number of regular kernel tiles. The FLA path analyzed here further chooses
-> $B_{\mathrm{kv}}=\ell'=64$, so one tile covers exactly one block and the 16 query heads sharing the same KV group reuse that K/V region.
-
-> **A note on the implementation used here.** The NSA paper publishes the algorithm,
-> the high-level program mapping of its Triton kernels, and performance results on
-> 8×A100, but not the original kernels used in those experiments. The formulas below
-> come from the paper; the code-level analysis of online Top-k, group-centric forward,
-> and CSR backward comes from the current FLA community implementation. FLA shows one
-> feasible implementation path, but simplifies the paper's learned overlapping
-> compression and is not an official DeepSeek implementation.
-
-NSA decomposes long-context attention into three access patterns:
+NSA decomposes long-context Attention into three access patterns:
 
 $$
 \text{compressed global context}
@@ -316,7 +120,7 @@ $$
 \text{fixed local window}.
 $$
 
-The crucial chain of derivation is not merely “sum three branches,” but
+The key derivation is not merely “sum three branches,” but
 
 $$
 \text{information demand}
@@ -328,9 +132,15 @@ $$
 \text{regular }16\times64\text{ matmul tile}.
 $$
 
+The algorithm comes from the NSA paper. The kernels used in the paper's experiments
+are not fully public, so our code-level discussion of online Top-K, the forward grid,
+and backward uses the FLA community implementation as one concrete path. Choices
+specific to that implementation are identified explicitly.
+`[PAPER] [CODE/community] [GAP]`
+
 ### 3.1 Algorithmic Contract: What Each Sparse Branch Contributes
 
-**Notation.** We omit the batch axis and use a sequence-major layout. For a sequence of length $T$,
+Omitting the batch axis and using a sequence-major layout, a sequence of length $T$ has
 $$
 Q\in\mathbb{R}^{T\times H_q\times d_k}.
 $$
@@ -369,7 +179,7 @@ $$
 
 causally visible selection blocks.
 
-**Independent representations for the three branches.** The paper gives each branch its own K/V projection:
+The three branches are not three masks over one shared KV representation. The paper gives each branch its own K/V projection:
 
 $$
 K^c\in\mathbb{R}^{T\times H_{kv}\times d_k},\qquad V^c\in\mathbb{R}^{T\times H_{kv}\times d_v},\qquad c\in\{\mathrm{cmp},\mathrm{slc},\mathrm{win}\}.
@@ -377,7 +187,7 @@ $$
 
 Therefore, even if multiple branches access the same token, we cannot first take a union of token IDs and treat the result as one attention operation. The branches use different representations, normalize independently, and only then combine their outputs.
 
-**Compression.** Each KV head maps an overlapping window of length $\ell=32$ through a learned compressor into one compressed K/V row. Adjacent windows have stride $d=16$, so a full sequence produces approximately $C_T\approx T/d$ compressed K/V rows.
+**Compression answers “what is roughly present far away?”** Each KV head maps an overlapping window of length $\ell=32$ through a learned compressor into one compressed K/V row. Adjacent windows have stride $d=16$, so a full sequence produces approximately $C_T\approx T/d$ compressed K/V rows.
 
 The local shapes for position $t$ and group $g$ are
 
@@ -399,7 +209,7 @@ $$
 
 It is smaller than dense attention by a constant factor of roughly $d$, but it is not linear in sequence length.
 
-**Sliding window.** The local branch accesses only
+**The sliding window answers “what is happening nearby?”** The local branch accesses only
 
 $$
 \mathcal W_t=\{\max(0,t-w+1),\ldots,t\},\qquad w=512,
@@ -407,7 +217,7 @@ $$
 
 providing fixed, contiguous local context that tiled attention can handle naturally.
 
-**Combining the three branches.** Each branch performs its own softmax and produces
+**Selection answers “which distant details should be expanded again?”** Each branch performs its own softmax and produces
 
 $$
 O^{\mathrm{cmp}}_{t,h,:},\ O^{\mathrm{slc}}_{t,h,:},\ O^{\mathrm{win}}_{t,h,:}\in\mathbb{R}^{d_v},
@@ -423,7 +233,7 @@ These gates need not sum to 1. In the execution DAG, compression attention and s
 
 ### 3.2 Routing: From Compression Probabilities to Top-16 Block IDs
 
-Selection does not train an entirely independent token router. It reuses the probabilities already learned by compression attention and remaps compressed-window importance onto 64-token selection blocks.
+Selection does not train another router. It reuses compression-Attention probabilities to convert “which compressed windows matter?” into “which 64-token blocks should be expanded?” The process has three steps: spatial remapping, a 16-head reduction, and Top-16.
 
 **Spatial remapping.** Let
 
@@ -492,7 +302,7 @@ compression probabilities       [T,Hq,≈T/16]
   → Top-16                       [T,Hkv,16]
 ```
 
-**Hidden materialization cost.** Standard FlashAttention does not write the complete probability matrix back to HBM; it usually returns only the output and LSE. Therefore, “reuse the compression probability” does not by itself explain how that probability reaches Top-k.
+**But where are the probabilities?** Standard FlashAttention does not write the complete probability matrix back to HBM; it usually returns only the output and LSE. Therefore, “reuse the compression probability” does not by itself explain how that probability reaches Top-k.
 
 At $T=65536$, the actual number of complete windows is $C_T=4095$. To illustrate the upper bound for a fixed-shape allocation, let the padded capacity be
 
@@ -546,6 +356,8 @@ The accompanying path also simplifies compression to non-overlapping mean poolin
 
 ### 3.3 Selection Forward: Logical Gather, Physical Block Tile
 
+#### From 16 IDs to 1,024 Logical Tokens
+
 Routing produces discrete block IDs:
 
 $$
@@ -559,7 +371,7 @@ $$
 \mathcal B_{j_s}=\{j_s\ell',\ldots,(j_s+1)\ell'-1\},\qquad \ell'=64.
 $$
 
-**Logical view.** For a mature query, if all 16 slots are valid, we can write
+For a mature query with all 16 slots valid, the logical gather is
 
 $$
 \widetilde K^{\mathrm{slc}}_{t,g}
@@ -596,7 +408,9 @@ $$
 
 in BF16. This creates an extra write, after which attention reads the same data again. The correct approach is to retain only the IDs and load the original K/V by block inside the attention kernel.
 
-**Program ownership.** The most natural owner for selection forward is
+#### What Does One Program Ultimately Write?
+
+The most natural owner for selection forward is
 
 $$
 \boxed{\text{one query position}\times\text{one KV group}}.
@@ -723,7 +537,9 @@ Q_{a,t,\mathcal H_g,:}
 \mathbb{R}^{16\times192}.
 $$
 
-The public variable-length path uses a packed $B=1$ representation. If sequence $i$ contains $T_Q^{(i)}$ query tokens and $T_K^{(i)}$ KV tokens, respectively, then
+**Optional implementation note: variable length does not change ownership.** The
+public variable-length path uses a packed $B=1$ representation. If sequence $i$
+contains $T_Q^{(i)}$ query tokens and $T_K^{(i)}$ KV tokens, respectively, then
 
 $$
 T_Q^{\mathrm{total}}=\sum_iT_Q^{(i)},\qquad
@@ -779,6 +595,8 @@ t_{\mathrm{local}}.
 $$
 
 Thus, varlen changes only how fixed-length $(a,t)$ coordinates are located. The $\nu$ and $g$ grid axes, and the ownership rule that “one program uniquely writes one output slice,” remain unchanged.
+
+#### How a 64-Token Block Becomes a Regular Tile
 
 The program then loops over the 16 selection slots. We use $B_{\mathrm{kv}}$ for the number of KV-token rows loaded and computed in one inner-loop iteration. In the current FLA path, it corresponds to the source parameter `BS` and exactly equals NSA's selection block length $\ell'$:
 
@@ -891,7 +709,7 @@ This is not a roofline figure for the entire kernel: it excludes Q, output, indi
 
 For a mature query, the main selection loop has 16 slots. Near the beginning of a sequence, the same control structure still runs, but invalid slots are masked. NSA provides a “fixed-capacity, padding-compatible workload,” not an absolutely fixed amount of work without boundary conditions.
 
-### 3.4 One Public Backward Path: Transposing the Sparse Graph in FLA
+### 3.4 Forward and Backward Use Different Sparse Graphs
 
 > **Takeaway.** The forward relation `query → selected blocks` finds an owner only for the output.
 > If we retain query-centric ownership,
@@ -905,7 +723,9 @@ $O^{\mathrm{slc}}_{t,\mathcal H_g,:}$. The backward pass, however, has two reduc
 
 The discussion below covers only the backward pass of the selection branch. Complete NSA also includes gates, a compression branch, a sliding branch, and the merging of gradients from all three branches into shared Q/input tensors.
 
-**Saved state and recomputation.** Selection backward does not need to save the complete probability matrix. It recomputes score/probability tiles from
+#### Recompute Probabilities, Preserve the Sparse Graph
+
+Selection backward does not need to save the complete probability matrix. It recomputes score/probability tiles from
 $Q,K^{\mathrm{slc}},I^{\mathrm{slc}}$, and
 $\mathrm{LSE}^{\mathrm{slc}}$, then combines them with
 $dO^{\mathrm{slc}}$ to recover local gradients. For batch/sequence $a$, query $t$,
@@ -929,7 +749,9 @@ $$
 as well as block counts and sequence metadata required in variable-length cases. The current FLA autograd path actually saves `q, k, v, o, lse` and retains metadata such as block indices in the context. The accurate conclusion is “$P^{\mathrm{slc}}$ is not saved,” not “the forward pass only needs to save
 $O^{\mathrm{slc}},\mathrm{LSE}^{\mathrm{slc}},I^{\mathrm{slc}}$.”
 
-**$dQ$: the query remains the owner.** For query $t$, only the blocks it selected contribute:
+#### $dQ$: the Query Remains the Owner
+
+For query $t$, only the blocks it selected contribute:
 
 $$
 dQ^{\mathrm{slc}}_{a,t,\mathcal H_g,:}
@@ -955,7 +777,8 @@ $$
 
 in registers before writing it back exactly once. Thus, dQ remains well suited to query-centric ownership.
 
-**$dK^{\mathrm{slc}}/dV^{\mathrm{slc}}$: query-centric ownership creates write conflicts.**
+#### Why $dK/dV$ Cannot Remain Query-Owned
+
 One KV block $b$ may be selected by many queries. Define
 
 $$
@@ -994,6 +817,8 @@ $$
 \rightarrow
 [B_{\mathrm{kv}},d_v].
 $$
+
+#### Transpose the Sparse Graph and Make Each KV Block the Owner
 
 If we keep the query as owner, different programs update the same
 $dK^{\mathrm{slc}}_b,dV^{\mathrm{slc}}_b$ concurrently. The implementation must then use many floating-point atomics or write partial buffers and reduce them later. A more natural approach is to transpose the sparse relation first:
@@ -1145,7 +970,9 @@ $$
 
 CSR does more than compress metadata. It rewrites the conflict “many queries write the same KV-gradient address” into “one KV owner sequentially reads its own queries,” and then restores a regular Tensor Core tile within that owner.
 
-**Remaining irregularity: fan-in.** Define
+#### Write Conflicts Disappear; the Fan-in Tail Remains
+
+Define
 
 $$
 NQ_{a,g,b}=|\mathcal Q_{a,g,b}|.
@@ -1158,7 +985,7 @@ We do not turn this long tail in fan-in into a performance experiment here. On t
 
 ### 3.5 NSA's Regularity Comes from the Algorithmic Contract, Not Kernel Magic
 
-NSA selection maps efficiently to a kernel because the algorithm deliberately provides three execution contracts:
+Under the paper's default configuration, NSA selection maps efficiently to a kernel because the algorithm deliberately provides three execution contracts:
 
 $$
 \boxed{\text{contiguous 64-token blocks}+\text{16 heads sharing IDs}+\text{a fixed 16-slot capacity that supports padding}}
@@ -1182,47 +1009,87 @@ In other words, the most reusable part of NSA is not one particular sparsity for
 
 > First make the algorithm emit sparse units that a GPU can consume, then choose a unique owner separately for the forward output and the backward gradient.
 
-**Sources for this section**
+## 4. From Blocks to Tokens: Why DSA Can Use Finer Selection
 
-- [*Native Sparse Attention: Hardware-Aligned and Natively Trainable Sparse
-  Attention*](https://arxiv.org/abs/2502.11089), Sections 3.2–3.4 and 4–5.
-  `[PAPER]`
-- [`fla-org/flash-linear-attention`](https://github.com/fla-org/flash-linear-attention)
-  commit
-  [`0a9b9f2`](https://github.com/fla-org/flash-linear-attention/tree/0a9b9f222e86b9a895c2447767e9b4cce6c8d530):
-  [`fla/ops/nsa/parallel.py`](https://github.com/fla-org/flash-linear-attention/blob/0a9b9f222e86b9a895c2447767e9b4cce6c8d530/fla/ops/nsa/parallel.py)
-  and
-  [`fla/ops/utils/csr.py`](https://github.com/fla-org/flash-linear-attention/blob/0a9b9f222e86b9a895c2447767e9b4cce6c8d530/fla/ops/utils/csr.py).
-  `[CODE/community]`
-- The conclusions about FLA's grid, padded tiles, and CSR ownership were checked
-  line by line against `parallel.py` and `csr.py` at the pinned commit above.
-  `[CODE/community]`
+NSA and DSA are not simply an “old design” and a “new design.” NSA selects blocks so
+that training and inference can consume contiguous tiles directly. DSA selects tokens
+because MLA exposes a different and sufficiently strong reuse axis. The hardware
+constraint did not disappear; the algorithm changed how it satisfies that constraint.
 
-## 4. DSA: Turning Arbitrary Token Selection Back into Regular Matrices
+### 4.1 Infra: Contiguous Blocks Are No Longer the Only Source of Regularity
 
-> **Takeaway.** DSA retains arbitrary token-level selection, but first makes all 128
-> main heads share the same set of IDs. FlashMLA then confines random row addresses
-> to the HBM→SMEM producer boundary. The algorithm provides an axis of reuse, which
-> lets the kernel reconstruct discrete rows as regular matrices.
+Consider the problem NSA faced. Arbitrary token selection creates many scattered KV
+rows, and during training those rows also participate in the backward reductions for
+$dK/dV$. NSA therefore fixes the selection unit to a contiguous 64-token block. The
+cost is that selection can say only “this region matters,” not select just the
+relevant tokens inside it. NSA trades selection granularity for regularity before the
+load. `[PAPER]`
 
-NSA confines sparsity to the boundaries between regular tiles by selecting contiguous
-blocks. DeepSeek Sparse Attention (DSA) operates at a finer granularity: each query can
-select arbitrary tokens from the entire history.
+DSA starts from a different base. DeepSeek-V3.2 already uses MLA, so each token stores
+one shared latent-KV entry. DSA further makes all 128 main heads of a query share one
+set of token IDs. A scattered row may be difficult to load, but after loading it can
+serve many heads. FlashMLA can therefore leave random addressing to the producer while
+Tensor Core consumers operate on regular SMEM tiles. Contiguous blocks are no longer
+the only way to obtain hardware efficiency. `[PAPER] [CODE]`
 
-This gives the selector more freedom, but it also destroys the local continuity on which
-block attention relies. A literal implementation would first gather a set of discrete KV
-rows, write a selected-KV tensor, and then feed that tensor to an ordinary attention
-kernel. This avoids most QK and PV computation, but leaves a random gather and an extra
-HBM round trip at the kernel boundary.
+From the infrastructure perspective, the design changes along three axes:
 
-DSA is therefore about more than Top-K. Three levels of the design jointly change the
-execution shape:
+| | NSA | DSA |
+|---|---|---|
+| Selection unit | Contiguous token block | Arbitrary individual token |
+| Reuse axis that amortizes the load | 16 query heads in one KV group | 128 main heads for one query |
+| Where the regular tile appears | Before the global load | After scattered rows enter SMEM |
+
+This finer selection is not a free upgrade. NSA routes on a compressed token axis.
+DSA preserves full token resolution in the Indexer and then performs exact Top-K.
+It bounds the main Attention by $O(L\kappa)$ without removing the
+$\Theta(L^2)$ Discovery term. A more accurate description is: **DSA trades stronger
+cross-head reuse and a specialized gather kernel for token-level selection, then
+moves the system bottleneck from sparse main Attention toward the Indexer and
+Top-K.** `[DERIVATION]`
+
+### 4.2 Training: Attach a New Router to an Existing MLA Checkpoint
+
+DeepSeek did not train DSA from scratch. It continued from DeepSeek-V3.1-Terminus
+after extending that model to a 128K context:
+
+1. **Dense warm-up:** keep dense Attention, freeze the main model, and train the
+   Indexer with a KL objective derived from the dense-Attention distribution.
+2. **Sparse training:** enable Top-2048 and let the main model adapt through the
+   language-modeling loss; the Indexer continues to use a separate KL loss. Its input
+   is detached from the main-model graph so that the two gradient paths remain
+   isolated.
+
+The point of this procedure is to retain the existing MLA parameterization while
+adding a router and a sparse kernel, rather than training the entire Attention system
+from scratch. `[PAPER]`
+
+> **Evidence boundary.** The DeepSeek report does not provide a direct NSA-versus-DSA
+> ablation or enumerate reasons for abandoning NSA. What is public is each paper's
+> algorithmic contract, DSA's use of MLA/MQA sharing, and its continued-training
+> procedure. The explanation above—why the design can move from blocks to tokens—is
+> a systems inference from those facts.
+
+We can now follow the actual DSA dataflow: Indexer scores, Top-K token IDs, the MLA
+execution representation, and finally the FlashMLA kernel.
+
+## 5. DSA: Turn Arbitrary Token Selection Back into Regular Matrices
+
+> **Takeaway.** DSA permits arbitrary token selection but makes all 128 main heads
+> share one set of IDs. Only the FlashMLA producer handles scattered addresses; once
+> rows enter SMEM, the consumer still sees regular matrices.
+
+The complete DSA forward path has three stages:
 
 $$
-\text{low-dimensional Indexer scans history} \rightarrow \text{all main heads share token IDs} \rightarrow \text{FlashMLA reconstructs regular tiles in SMEM}.
+\text{low-dimensional Indexer scans history}
+\rightarrow
+\text{all main heads share token IDs}
+\rightarrow
+\text{FlashMLA reconstructs regular tiles in SMEM}.
 $$
 
-The table below keeps only the notation needed to understand this chain.
+The table below keeps only the notation needed to follow those shapes.
 
 | Symbol | Meaning | DeepSeek-V3.2 |
 |---|---|---:|
@@ -1234,21 +1101,48 @@ The table below keeps only the notation needed to understand this chain.
 | $D_V^{\mathrm{MHA}}$ | Value dimension of the original MHA | $128$ |
 | $\kappa$ | Maximum number of tokens selected per query | $2048$ |
 
-Here, $D_V^{\mathrm{MHA}}=128$ must not be conflated with FlashMLA's internal
-latent-value dimension $D_C=512$. The main Attention also admits two algebraically
-equivalent representations with different execution shapes:
+$D_V^{\mathrm{MHA}}=128$ must not be confused with FlashMLA's latent-value
+dimension $D_C=512$. The main Attention also has two algebraically equivalent
+representations with different execution shapes:
 
 $$
-D_{QK}^{\mathrm{MHA}} =D_N+D_R =192,
+D_{QK}^{\mathrm{MHA}}=D_N+D_R=192,
 $$
 
 $$
-D_{QK}^{\mathrm{MQA}} =D_C+D_R =576.
+D_{QK}^{\mathrm{MQA}}=D_C+D_R=576.
 $$
 
-### 4.1 Indexer: An Inexpensive Scan over the Full History
+### 5.1 Indexer: Low-Dimensional, but Still Scanning the Full History
 
-**First distinguish the two kinds of scores.** One DSA layer contains both
+#### Step 1: Score Every Query–Token Pair
+
+The Indexer assigns a cheap routing score to every visible token and selects
+Top-$\kappa$:
+
+$$
+I_{t,s}
+=
+\sum_{j=0}^{H_I-1}
+w^I_{t,j}
+\operatorname{ReLU}
+\left(\left\langle q^I_{t,j},k^I_s\right\rangle\right),
+$$
+
+where
+
+$$
+q^I_t:[H_I,D_I]=[64,128],\qquad
+k^I_s:[D_I]=[128],\qquad
+w^I_t:[H_I]=[64].
+$$
+
+Across all queries and visible tokens, the final routing-score matrix is
+$I:[T_Q,T_K]$. Projection, RoPE, Hadamard, FP8, and DeepGEMM fusion all serve the
+same goal: compute this matrix without writing the much larger
+$[T_Q,64,T_K]$ intermediate to HBM.
+
+One DSA layer also contains two distinct kinds of scores:
 
 $$
 I:[T_Q,T_K],
@@ -1266,7 +1160,9 @@ tokens, and only this score enters the main Attention softmax.
 
 The Indexer therefore decides *where to look*, not *how to weight what is found*.
 
-**Shared query latent.** The normalized hidden states
+#### Step 2: Produce Low-Dimensional Queries, a Shared Key, and Head Weights
+
+The normalized hidden states
 
 $$
 X:[T_Q,7168]
@@ -1336,7 +1232,9 @@ $$
 Only Indexer Q reuses $C^Q$. Indexer K and these weights are both projected directly
 from $X$.
 
-**RoPE, Hadamard, and FP8 form an execution contract.** Each 128-D Indexer Q/K vector
+#### Step 3: RoPE, Hadamard, and FP8
+
+Each 128-D Indexer Q/K vector
 is split as
 
 $$
@@ -1405,7 +1303,9 @@ $$
 Compared with a full main-KV row, this is what makes the bandwidth of the full-history
 scan substantially smaller.
 
-**Per-head routing logits must not be materialized.** Mathematically, for a fixed
+#### Step 4: Fuse 64 Heads On Chip and Write Only the Final Score
+
+Mathematically, for a fixed
 query $t$, we first have
 
 $$
@@ -1479,7 +1379,9 @@ not Indexer–TopK fusion. The released scorer still emits the full
 $I:[T_Q,T_K]_{\mathrm{FP32}}$, which a separate exact Top-K implementation must scan
 again.
 
-**Mathematical Top-K and the kernel tensor live at two different levels.** For query
+#### Step 5: Top-K Turns Scores into Token Addresses
+
+For query
 position $t$, let $p_t$ be the final causally visible position. Mathematically,
 
 $$
@@ -1524,7 +1426,7 @@ Converting the reference's INT64 Top-K result into a fixed-width INT32 kernel te
 is therefore real data-preparation work, not a dtype annotation that can be omitted
 from a shape diagram.
 
-**The training boundary of hard Top-K.** Top-K IDs are discrete control flow. Except at
+Top-K IDs are discrete control flow. Except at
 sorting boundaries, the language-modeling loss cannot provide an ordinary continuous
 gradient through the decision of whether a token is selected. During dense warm-up,
 the main model is frozen and the Indexer is trained with a KL loss against a target
@@ -1537,7 +1439,9 @@ The main model therefore adapts to sparse selections produced dynamically by the
 current Indexer, not to a fixed set of token IDs. This explains how routing is learned,
 but it does not change the execution cost of exact Top-K at inference time.
 
-### 4.2 MLA Bridge: Why the Main Kernel Is 576-D MQA
+### 5.2 MLA Bridge: Why the Main Kernel Is 576-D MQA
+
+#### The Original MHA Form Re-expands the KV Cache
 
 The Indexer produces addresses; the main MLA still computes the actual attention
 weights. FlashMLA's input shapes become clear only after rewriting MLA from its
@@ -1596,7 +1500,9 @@ $$
 Materializing them for all 128 heads would discard the cache compression before
 attention even begins.
 
-**Absorb the key up-projection into the query.** The content score satisfies
+#### Absorb the Key Up-Projection into the Query
+
+The content score satisfies
 
 $$
 (q^C_{t,h})^{\mathsf T}W_h^{UK}c^{KV}_s
@@ -1647,7 +1553,9 @@ $$
 Using $576^{-1/2}$ would change the model: 576 is the width of the absorbed execution
 representation, not the dimension that originally defined the attention score.
 
-**Move the value up-projection after Attention.** By linearity,
+#### Move the Value Up-Projection after Attention
+
+By linearity,
 
 $$
 \sum_sP_{t,h,s}W_h^{UV}c^{KV}_s
@@ -1695,7 +1603,7 @@ SM90 kernel places 64 heads in one CTA, so each loaded row is reused 64 ways in 
 A second CTA reads the same IDs, but the CTAs do not share SMEM; any reuse between them
 depends on the memory hierarchy and must not be assumed to be an L2 hit.
 
-### 4.3 FlashMLA: Confining Random Rows to the SMEM Boundary
+### 5.3 FlashMLA: Confine Random Rows to the SMEM Boundary
 
 > **Takeaway.** FlashMLA does not materialize
 > $K^{\mathrm{slc}}:[T_Q,\kappa,576]$ and
@@ -1756,7 +1664,9 @@ but do not require either selected tensor to exist physically in HBM.
 
 The real question is not the formula, but where $K^{\mathrm{slc}}$ should exist.
 
-**Boundary of the public sparse-prefill API.** The Hopper path audited here is
+#### Stage 1: Inputs Are Only Q, Shared KV, and Token IDs
+
+The audited Hopper sparse-prefill path is
 
 ```python
 flash_mla_sparse_fwd(
@@ -1796,7 +1706,9 @@ The last dimensions of Q, KV, and indices must be contiguous. An invalid index c
 boundary of the current release kernel; they cannot be generalized to arbitrary head
 counts, arbitrary dimensions, or arbitrary Top-K sizes.
 
-**Why an external gather is the wrong materialization boundary.** If a separate kernel
+#### Stage 2: Do Not Build Selected-KV in HBM
+
+If a separate kernel
 first gathers
 
 $$
@@ -1832,7 +1744,9 @@ $$
 tile, which the Tensor Core consumer then treats as an ordinary two-dimensional
 matrix.
 
-**CTA and warpgroup ownership.** The SM90 sparse-prefill release uses
+#### Stage 3: One CTA Owns 64 Heads
+
+The SM90 sparse-prefill release uses
 
 $$
 B_H=64, \qquad B_{\kappa}=64, \qquad N_{\mathrm{threads}}=384.
@@ -1876,7 +1790,9 @@ $$
 
 selected-token chunks are organized into 16 even/odd paired iterations.
 
-**The row base is random; the 576 elements within a row are not.** One BF16 KV row
+#### Stage 4: The Producer Gathers; the Consumer Sees Only a Regular Tile
+
+The row base is random, but the 576 elements within a row are not. One BF16 KV row
 occupies
 
 $$
@@ -1902,7 +1818,9 @@ randomly determine the row base
 The irregularity is confined to the global-memory-hierarchy-to-SMEM boundary; the internal shapes of QK
 and PV become regular matrices again.
 
-**The two consumers partition two different axes.** WG0 and WG1 both compute the full
+#### Stage 5: Two Consumers Partition the Token and Value Axes
+
+WG0 and WG1 both compute the full
 QK feature contraction:
 
 $$
@@ -1943,7 +1861,9 @@ accumulate its own normalizer until the epilogue combines them in `reduce_L()`; 
 two output halves are reduced there as well. The pipeline changes ownership, not the
 mathematical softmax over selected tokens.
 
-**Half-buffer pipeline.** This is not a simple ping-pong between two complete
+#### Stage 6: Pipeline the Next Gather under the Current Computation
+
+This is not a simple ping-pong between two complete
 $[64,576]$ tiles. `plan.k[0]` and `plan.k[1]` hold the even and odd 64-token chunks
 of the current pair, respectively. Each chunk is further divided along the feature
 axis into $[0:256]$ and $[256:576]$, with a separate ready/free barrier for each
@@ -1974,7 +1894,9 @@ reduces the number of KV bytes that must be read nor changes the randomness of t
 selected row addresses. If L2/TLB/HBM latency exceeds the window that the computation
 of the current pair can cover, the consumer still stalls.
 
-**How shared selection becomes locality.** Within one CTA, every 576-D KV row is
+#### Why This Pipeline Has a Chance to Work
+
+Within one CTA, every 576-D KV row is
 reused by 64 query heads. Counting only the QK and latent-PV work performed with that
 row, the local arithmetic is approximately
 
@@ -2003,7 +1925,9 @@ not include
 - cache reuse between the two CTAs, which is not guaranteed;
 - launch, scheduling, and fixed service overheads.
 
-**Experiment: how much does KV-row locality still matter?** The decomposition above
+### 5.4 Controlled Experiment: What Cost Remains for Random KV Rows?
+
+The decomposition above
 suggests a testable prediction. FlashMLA does not remove random row addresses, but
 their effect on end-to-end kernel latency may be small after 64-head reuse, SMEM
 repacking, and producer–consumer overlap. The experiment below measures that response;
@@ -2150,7 +2074,9 @@ requires replaying real Indexer traces through the same kernel and checking whet
 their adjacent distances, regions per tile, cross-query overlap, and latency fall
 inside the range covered here.
 
-**Prefill and decode use different kernels.** The microarchitecture and locality
+### 5.5 Optional Implementation and Architecture Notes
+
+**Decode uses a different kernel.** The microarchitecture and locality
 experiment above concern BF16, non-paged SM90 sparse-prefill. The separately measured
 single-query H100 path uses paged FP8 sparse-decode.
 
@@ -2180,7 +2106,7 @@ from sparse-prefill. The two kernels implement the same selected-token attention
 semantics under different serving conditions, but their cache shapes, metadata costs,
 and one-kernel conclusions are not interchangeable.
 
-**On Blackwell, FlashMLA moves the indirect gather into TMA.** The following structure
+**Blackwell pushes the gather down into TMA.** The following structure
 is specific to the audited FlashMLA commit
 [`9241ae3`](https://github.com/deepseek-ai/FlashMLA/tree/9241ae3ef9bac614dd25e45e507e089f888280e0).
 For $H_q=128,\kappa=2048,D_{QK}=576$, the public dispatcher selects the regular SM100
@@ -2225,7 +2151,7 @@ and completion tracking into TMA and can place data directly in swizzled SMEM. I
 not show an end-to-end latency reduction by itself, and the four global-memory rows
 may still be physically far apart. This SM100 path is also outside what the H100/SM90
 measurements in this article validate.
-### 4.4 The Hidden Quadratic Term: A Sparse Main Kernel Does Not Make a Linear System
+### 5.6 The Hidden Quadratic Term: A Sparse Main Kernel Does Not Make a Linear System
 
 > **Takeaway.** FlashMLA confines the expensive main Attention computation to a fixed Top-$K$, but
 > the exact Lightning Indexer still examines the entire candidate history for every query. Therefore,
@@ -2238,7 +2164,9 @@ In what follows, $\mathcal W$ counts only the dominant dot/QK/PV operations and 
 the factor of 2 for FMA common to every expression. These are shape-derived useful-MAC
 counts, not equivalent units of time across different dtypes and kernels.
 
-**One mature query.** Given a history of length $L$, the Indexer cost is:
+#### Theory 1: Cost of One New Token
+
+Given a history of length $L$, the Indexer cost is:
 
 $$
 \mathcal W_{\mathrm{Indexer}}(L) = H_I D_I L = 64\cdot128\cdot L = 8192L.
@@ -2266,7 +2194,9 @@ $$
 
 The first term keeps growing with history length; the second saturates once $L\ge2048$.
 
-**Full causal prefill.** Now let $N$ denote the complete causal sequence length and
+#### Theory 2: Cumulative Cost of Full Causal Prefill
+
+Now let $N$ denote the complete causal sequence length and
 sum over query positions $t=1,\ldots,N$:
 
 $$
@@ -2320,7 +2250,9 @@ $$
 
 This is a highly valuable reconstruction of constants, not a change in asymptotic complexity.
 
-**How large a quadratic coefficient does it replace?** Using the original 192-D MHA score and 128-D MHA value as a prefill-style baseline:
+#### DSA Changes the Constant of the Quadratic Term
+
+Using the original 192-D MHA score and 128-D MHA value as a prefill-style baseline:
 
 $$
 \mathcal W_{\mathrm{dense,MHA}}(L) = H(192+128)L = 40960L.
@@ -2349,7 +2281,9 @@ the full-history scan is only the shared 128-D FP8 Indexer key and its scale, al
 the Indexer query, head weights, and score-carrier writes remain. The full 576-D main
 KV representation is read only for selected tokens.
 
-**Endpoint and full-causal accounting must be separated.** The endpoint model considers only one query facing a complete history of length $L$; the full-causal model sums over every query position in the sequence.
+#### Optional: Analytical Operation-Count Crossovers
+
+Endpoint and full-causal accounting must be separated. The endpoint model considers only one query facing a complete history of length $L$; the full-causal model sums over every query position in the sequence.
 
 Let $\kappa=2048$ and $L\ge\kappa$. The prefill-style baseline and DSA endpoint costs are respectively:
 
@@ -2402,7 +2336,9 @@ only an arithmetic scale reference; they do not predict the measured $[32K,64K]$
 checkpoint bracket. The first three dense-baseline comparisons only quantify the
 useful-MAC coefficient that DSA replaces.
 
-**The released implementation still materializes a complete routing-score matrix.**
+#### The Public Path Still Materializes an FP32 Score Carrier
+
+The released implementation still materializes a complete routing-score matrix.
 If full prefill is represented as one tensor,
 
 $$
@@ -2484,7 +2420,9 @@ although the allocator may retain previous reservations. Chunking turns one squa
 live tensor into a rectangular tile; it does not change the quadratic cumulative
 growth of scorer work or Top-K carrier traffic.
 
-**A conditional lower bound for exact Top-K.** Suppose query-dependent routing scores are
+#### Why Exact Top-K Still Scans Every Candidate
+
+Suppose query-dependent routing scores are
 treated as an oracle with no additional structure, and there is no candidate-specific bound
 that can safely eliminate an unexamined candidate. Then exact global Top-$\kappa$ must,
 in the worst case, inspect all $L$ candidates.
@@ -2508,8 +2446,9 @@ launches, but they do not automatically reduce the number of candidates that mus
 Changing the asymptotic term requires approximate retrieval, a provably valid hierarchical
 candidate structure, or reuse of a smaller candidate set across queries.
 
-**Experiment: when does Discovery's quadratic term become visible after the main
-attention is sparse?** Operation counts describe the algorithm, but GPU latency also
+#### H100 Experiment: When Does Quadratic Discovery Overtake Sparse Main Attention?
+
+Operation counts describe the algorithm, but GPU latency also
 depends on dtype, kernel efficiency, intermediate tensors, and memory traffic. We ask
 one narrow, directly measurable question:
 
@@ -2705,41 +2644,7 @@ direction of stage dominance. Neither $17.88\times$ nor any absolute latency is 
 as a stable hardware constant, and the paged FP8 decode curve is not joined to the
 BF16 causal-prefill curve above.
 
-### 4.5 DSA Makes the Main Attention Sparse—and Pushes the Bottleneck Toward Discovery
-
-DSA is not simply “run Top-K, then call ordinary Attention.” The complete co-design chain is:
-
-$$
-\boxed{ \begin{aligned} &\text{shared, low-dimensional FP8 Indexer scans the entire history}\\ &\rightarrow \text{exact Top-K token IDs for each query}\\ &\rightarrow \text{128 main heads share one selection set}\\ &\rightarrow \text{fused discrete-row gather within the CTA}\\ &\rightarrow \text{reconstruct a regular }[64,576]\text{ tile in SMEM}\\ &\rightarrow \text{Tensor Core QK, online softmax, and latent PV}. \end{aligned} }
-$$
-
-The algorithm exposes KV-row reuse across heads; the kernel confines address irregularity to
-the HBM→SMEM boundary; the pipeline overlaps load, QK, softmax, and PV within that boundary.
-
-This chain explains why DSA can substantially reduce the arithmetic cost and main-KV bandwidth
-of long-context serving. Its converse is equally important:
-
-$$
-\boxed{ \text{DSA reduces the dimension and constant of the quadratic term,} \quad \text{but the exact Lightning Indexer keeps full prefill at }O(L^2). }
-$$
-
-These two statements are not contradictory. The former shows how algorithm–infra co-design
-turns arbitrary token sparsity into regular tiles that a GPU can execute; the latter identifies
-Top-K discovery as the next boundary that long-context systems must confront.
-
-**The derivations, source observations, and measurements cover different layers.** The
-DeepSeek-V3.2 paper and public inference reference define the semantics and training
-procedure. DeepGEMM reveals where its FP8 scorer materializes scores; FlashMLA SM90
-defines the CTA, warpgroup, and sparse-prefill interface. The values 34,816 and about
-68,592 tokens are useful-MAC references. The $[32K,64K]$ bracket, 2M measurements,
-and 4M capacity limit come from the causal-prefill scaling experiment; 128K NCU
-measurements explain carrier and Top-K traffic. The near-null locality response comes
-from a separate H100 BF16 sparse-prefill microbenchmark. This article does not measure
-the performance of Indexer–TopK fusion or Blackwell `gather4`: the former remains a
-source- and profiler-constrained design opportunity, while the latter is tied to the
-specific audited commit above.
-
-### 4.6 Returning to the Beginning: What Do These Two Co-design Paths Reveal Together?
+### 5.7 Return to the Beginning: What the Two Co-design Paths Reveal
 
 > **Takeaway.** The algorithm decides “which data is worth accessing” and “who can share one
 > access”; the infrastructure decides whether those accesses can be owned, rearranged, and
@@ -2868,7 +2773,7 @@ $$
 The real open question left by this research thread is not “what should the next sparse mask
 look like?” but:
 
-> **Can we avoid a full $L^2$ selector while still exposing a sparse workload with enough
+> **Can we avoid a full $\Theta(L^2)$ selector while still exposing a sparse workload with enough
 > sharing, regularity, and reducibility for the kernel?**
 
 Hierarchical routing, approximate retrieval, and candidate-set reuse across queries may all
@@ -2889,13 +2794,15 @@ verifiable boundary among these three—not another isolated reduction in nomina
 - Code-level conclusions about the DSA scorer and sparse Attention were checked against
   [`DeepGEMM`](https://github.com/deepseek-ai/DeepGEMM) and
   [`FlashMLA`](https://github.com/deepseek-ai/FlashMLA), respectively.
-- The causal-prefill Discovery scaling data were collected on one H100. The body
-  separates repeated clean timings, instrumented stage timings, capacity preflight,
-  and profiler diagnostics; profiler durations do not replace the CUDA-event curve.
-- The KV-row locality data were also collected on one H100. The experiment section
-  states the conditions, paired schedule, statistical procedure, correctness checks,
-  profiler limitations, and the boundary between synthetic indices and production
-  traces.
+- The causal-prefill Discovery scaling data were collected on one H100 and frozen as
+  Run ID `e2-h100-20260809-extended1`. The body separates repeated clean timings,
+  instrumented stage timings, capacity preflight, and profiler diagnostics; a
+  separate 128K NCU measurement explains carrier/Top-K traffic, and profiler
+  durations do not replace the CUDA-event curve.
+- The KV-row locality data were also collected on one H100 and frozen as Run ID
+  `e3-h100-20260805-formal2`. The experiment section states the conditions, paired
+  schedule, statistical procedure, correctness checks, profiler limitations, and
+  the boundary between synthetic indices and production traces.
 - The instruction semantics of Blackwell `tile::gather4` follow the
   [NVIDIA PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/).
   This is not a path that the H100/SM90 experiments in this article can validate.
