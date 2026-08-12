@@ -44,44 +44,44 @@ kernel ownership 与访存路径。两组 H100 实验只在它们真正回答问
 
 **第一，logical tensor 不等于 HBM tensor。** 以一条 Attention row 为例，
 
-\[
+$$
 Q:[1,d_k],\quad K:[T_K,d_k],\quad V:[T_K,d_v]
-\]
+$$
 
-在语义上产生 \(S,P:[1,T_K]\) 与 \(O:[1,d_v]\)。这里的 \(S\) 和 \(P\)
+在语义上产生 $S,P:[1,T_K]$ 与 $O:[1,d_v]$。这里的 $S$ 和 $P$
 不一定写回 HBM。后文会明确区分：算法上存在的 **logical shape**、跨 kernel
 保存的 **materialized shape**，以及一个 CTA/program 当前处理的 **tile
 shape**。
 
 **第二，每个输出都要有明确的 owner。** 这里的 owner 是“最终负责写回这块
-输出的 program”。假设一个 program 独占 \(B_R\) 条 softmax rows，并分批读取
-\(B_{\mathrm{kv}}\) 条 KV：
+输出的 program”。假设一个 program 独占 $B_R$ 条 softmax rows，并分批读取
+$B_{\mathrm{kv}}$ 条 KV：
 
-\[
+$$
 Q_i:[B_R,d_k],\quad
 K_j:[B_{\mathrm{kv}},d_k],\quad
 V_j:[B_{\mathrm{kv}},d_v].
-\]
+$$
 
-其中 \(\alpha\) 是 score scale。局部计算始终是两个规则矩阵乘：
+其中 $\alpha$ 是 score scale。局部计算始终是两个规则矩阵乘：
 
-\[
+$$
 \begin{aligned}
 S_{ij}&=\alpha Q_iK_j^\top:
 [B_R,d_k][d_k,B_{\mathrm{kv}}]\rightarrow[B_R,B_{\mathrm{kv}}],\\
 \Delta O_i&=\widetilde P_{ij}V_j:
 [B_R,B_{\mathrm{kv}}][B_{\mathrm{kv}},d_v]\rightarrow[B_R,d_v].
 \end{aligned}
-\]
+$$
 
 Program 只需为自己拥有的 rows 保留 online-softmax 状态
 
-\[
+$$
 m,z:[B_R],\qquad O_{\mathrm{acc}}:[B_R,d_v].
-\]
+$$
 
-每个 KV tile 到来后，先更新 row-wise maximum \(m\)，再把旧的 \(z\) 与
-\(O_{\mathrm{acc}}\) 缩放到新基准，累加当前 tile 的概率和 value numerator。
+每个 KV tile 到来后，先更新 row-wise maximum $m$，再把旧的 $z$ 与
+$O_{\mathrm{acc}}$ 缩放到新基准，累加当前 tile 的概率和 value numerator。
 因此 selected blocks 或 selected rows 可以分批进入，而无须物化完整概率矩阵。
 
 **第三，重点不是“跳过多少”，而是“不规则性停在哪里”。** 对
@@ -99,21 +99,21 @@ cache-line overfetch、page/TLB 与 allocator 影响会在相关位置单独讨�
 
 > **Takeaway.** NSA 的关键不是“选 16 个 block”，而是每个 ID 都指向连续的
 > 64 个 tokens，并由同一 KV group 的 16 个 heads 共同使用。算法输出因此已经
-> 接近一个规则的 \([16,64]\) 计算 tile。
+> 接近一个规则的 $[16,64]$ 计算 tile。
 
 NSA 将长程注意力拆成三种访问模式：
 
-\[
+$$
 \text{压缩的全局上下文}
 \;+\;
 \text{动态选出的关键 blocks}
 \;+\;
 \text{固定局部窗口}.
-\]
+$$
 
 真正关键的推导链不是“三路相加”，而是
 
-\[
+$$
 \text{信息需求}
 \longrightarrow
 \text{block IDs}
@@ -121,7 +121,7 @@ NSA 将长程注意力拆成三种访问模式：
 \text{共享选块的 GQA workload}
 \longrightarrow
 \text{规则的 }16\times64\text{ matmul tile}.
-\]
+$$
 
 算法公式来自 NSA 论文。论文实验所用 kernel 没有完整公开，因此本文的
 online Top-K、forward grid 与 backward 代码分析以 FLA 社区实现为例；凡是
@@ -133,105 +133,105 @@ NSA 没有要求一条稀疏路径同时承担所有信息。Compression 保留�
 selection 找回重要细节，sliding window 保证局部连续性。三路各自做 softmax，
 最后再融合输出。
 
-省略 batch 轴，使用 sequence-major layout。对长度为 \(T\) 的序列，
-\[
+省略 batch 轴，使用 sequence-major layout。对长度为 $T$ 的序列，
+$$
 Q\in\mathbb{R}^{T\times H_q\times d_k}.
-\]
+$$
 
 NSA 面向 GQA。论文默认配置采用
 
-\[
+$$
 H_q=64,\qquad H_{kv}=4,\qquad G=H_q/H_{kv}=16,\qquad d_k=192,\qquad d_v=128.
-\]
+$$
 
-第 \(g\) 个 KV head 对应的 query-head group 为
+第 $g$ 个 KV head 对应的 query-head group 为
 
-\[
+$$
 \mathcal H_g=\{gG,\ldots,(g+1)G-1\}.
-\]
+$$
 
 三条分支的算法参数是：
 
 | 分支 | 稀疏单位 | 论文默认配置 | 每条 query 的可见规模 |
 |---|---:|---:|---:|
-| compression | overlapping window | \(\ell=32,d=16\) | 约 \(L_t/d\) |
-| selection | contiguous token block | \(\ell'=64,n=16\) | 至多 \(n\ell'=1024\) |
-| sliding | local token window | \(w=512\) | 至多 512 |
+| compression | overlapping window | $\ell=32,d=16$ | 约 $L_t/d$ |
+| selection | contiguous token block | $\ell'=64,n=16$ | 至多 $n\ell'=1024$ |
+| sliding | local token window | $w=512$ | 至多 512 |
 
-其中 \(L_t=t+1\) 是位置 \(t\) 的因果前缀长度。它包含
+其中 $L_t=t+1$ 是位置 $t$ 的因果前缀长度。它包含
 
-\[
+$$
 C_t=\max\left(0,\left\lfloor\frac{L_t-\ell}{d}\right\rfloor+1\right)
-\]
+$$
 
 个完整 compression windows，以及
 
-\[
+$$
 M_t=\left\lceil\frac{L_t}{\ell'}\right\rceil
-\]
+$$
 
 个因果可见的 selection blocks。
 
 三路不是同一份 KV 上的三个 mask。论文为它们提供独立的 K/V projection：
 
-\[
+$$
 K^c\in\mathbb{R}^{T\times H_{kv}\times d_k},\qquad V^c\in\mathbb{R}^{T\times H_{kv}\times d_v},\qquad c\in\{\mathrm{cmp},\mathrm{slc},\mathrm{win}\}.
-\]
+$$
 
 因此，即使三路访问了同一个 token，也不能简单求 union 后只算一次
 Attention：它们使用不同表示、分别归一化，最后才组合输出。
 
 **Compression 回答“远处大致有什么”。** 每个 KV head 将长度为
-\(\ell=32\) 的 overlapping window 压成一行 K/V，相邻窗口 stride 为
-\(d=16\)。完整序列因此产生约 \(C_T\approx T/d\) 行 compressed K/V。
+$\ell=32$ 的 overlapping window 压成一行 K/V，相邻窗口 stride 为
+$d=16$。完整序列因此产生约 $C_T\approx T/d$ 行 compressed K/V。
 
-位置 \(t\)、group \(g\) 的局部 shapes 为
+位置 $t$、group $g$ 的局部 shapes 为
 
-\[
+$$
 Q_{t,\mathcal H_g,:}\in\mathbb{R}^{G\times d_k},\qquad
 \widetilde K^{\mathrm{cmp}}_{0:C_t,g,:}\in\mathbb{R}^{C_t\times d_k},\qquad
 \widetilde V^{\mathrm{cmp}}_{0:C_t,g,:}\in\mathbb{R}^{C_t\times d_v}.
-\]
+$$
 
-\[
+$$
 [G,d_k][d_k,C_t]\rightarrow[G,C_t],\qquad [G,C_t][C_t,d_v]\rightarrow[G,d_v].
-\]
+$$
 
-固定 stride \(d\) 时，所有 query 的 compression Attention pair count 仍为
+固定 stride $d$ 时，所有 query 的 compression Attention pair count 仍为
 
-\[
+$$
 \sum_{t=0}^{T-1}\Theta(C_t)=\Theta(T^2/d).
-\]
+$$
 
-在相同 feature dimension 下，它相对 dense causal pair count 约减少 \(d\) 倍，
+在相同 feature dimension 下，它相对 dense causal pair count 约减少 $d$ 倍，
 但仍不是线性复杂度。这里比较的是算术规模，不是包含 compressor、routing 与
 kernel efficiency 后的 wall-clock speedup。
 
 **Sliding window 回答“眼前发生了什么”。** 局部分支只访问
 
-\[
+$$
 \mathcal W_t=\{\max(0,t-w+1),\ldots,t\},\qquad w=512,
-\]
+$$
 
 提供固定、连续且易于 tiled attention 处理的局部上下文。
 
 **Selection 回答“远处哪些细节值得重新展开”。** 它怎样产生 block IDs 是
 下一小节的主线。三条分支分别完成 softmax，得到
 
-\[
+$$
 O^{\mathrm{cmp}}_{t,h,:},\ O^{\mathrm{slc}}_{t,h,:},\ O^{\mathrm{win}}_{t,h,:}\in\mathbb{R}^{d_v},
-\]
+$$
 
 再由独立 sigmoid gates 组合：
 
-\[
+$$
 O_{t,h,:}=\gamma^{\mathrm{cmp}}_{t,h}O^{\mathrm{cmp}}_{t,h,:}+\gamma^{\mathrm{slc}}_{t,h}O^{\mathrm{slc}}_{t,h,:}+\gamma^{\mathrm{win}}_{t,h}O^{\mathrm{win}}_{t,h,:}.
-\]
+$$
 
 这些 gate 不要求和为 1。执行 DAG 上，sliding branch 可以与
 compression/routing chain 并行，selection Attention 则必须等待 block IDs。
 至于 compression probabilities 如何到达 routing，属于实现选择：可以物化、
-与 Top-K 融合，或者像后文分析的 FLA 路径一样，根据 \(Q\)、compressed \(K\)
+与 Top-K 融合，或者像后文分析的 FLA 路径一样，根据 $Q$、compressed $K$
 与 LSE 分块重算。
 
 ### 3.2 Routing：从 Compression Probability 到 Top-16 Block IDs
@@ -242,13 +242,13 @@ Selection 没有另训练一套 router。它复用 compression Attention 已经�
 
 **空间重映射。** 令
 
-\[
+$$
 P^{\mathrm{cmp}}_{t,h}\in\mathbb{R}^{C_t}
-\]
+$$
 
-为 query head \(h\) 的 compression probability。论文 Eq. 9 将它变成 selection-block score：
+为 query head $h$ 的 compression probability。论文 Eq. 9 将它变成 selection-block score：
 
-\[
+$$
 R^{\mathrm{slc}}_{t,h}[j]
 =
 \sum_{m=0}^{\ell'/d-1}
@@ -256,33 +256,33 @@ R^{\mathrm{slc}}_{t,h}[j]
 P^{\mathrm{cmp}}_{t,h}
 \!\left[\frac{\ell'}{d}j-m-u\right],
 \qquad j\in\{0,\ldots,M_t-1\}.
-\]
+$$
 
 越界的 compressed-window index 视为零。论文配置满足
 
-\[
+$$
 \ell'/d=4,\qquad \ell/d=2.
-\]
+$$
 
 直觉上，一个 64-token block 会与多个 overlapping compression windows 相交；
 这个双重求和就是把所有相关窗口的概率累加到该 block。
 
-**GQA group reduction 与 Top-\(n\)。** 同一 KV head 的 \(G=16\) 个 query heads 必须共享 selection IDs，因此
+**GQA group reduction 与 Top-$n$。** 同一 KV head 的 $G=16$ 个 query heads 必须共享 selection IDs，因此
 
-\[
+$$
 \bar R^{\mathrm{slc}}_{t,g}[j]
 =
 \sum_{h\in\mathcal H_g}R^{\mathrm{slc}}_{t,h}[j],
 \qquad
 \bar R^{\mathrm{slc}}_{t,g}\in\mathbb{R}^{M_t},
-\]
+$$
 
-\[
+$$
 I^{\mathrm{slc}}_{t,g}
 =
 \operatorname{TopKIndex}\!\left(\bar R^{\mathrm{slc}}_{t,g},n\right),
 \qquad n=16.
-\]
+$$
 
 论文 Sec. 4 的具体配置还规定：16 个 selection slots 中固定激活 1 个 initial
 block 和最近 2 个 local blocks，其余 slots 才由上述动态 ranking 填充。
@@ -290,18 +290,18 @@ block 和最近 2 个 local blocks，其余 slots 才由上述动态 ranking 填
 
 对成熟位置，
 
-\[
+$$
 I^{\mathrm{slc}}_{t,g}
 =(j_0,\ldots,j_{n-1})\in\mathbb{Z}^{16}.
-\]
+$$
 
 它是带有 slot 顺序的 index tensor，而不是数学集合。序列开头可能只有少于 16
-个因果有效 blocks；kernel 可维持 16 个 selection slots，但必须用 \(-1\) 或
+个因果有效 blocks；kernel 可维持 16 个 selection slots，但必须用 $-1$ 或
 block count 标记 padding。“固定 16 个 slots”不等于“始终存在 16 个有效
 blocks”。
 
 这三个固定 slots 也会影响 backward：initial block 会被大量 queries 共同选择，
-而 local blocks 随 query 移动。到 3.4 节讨论 \(dK/dV\) 时，这种 fan-in 差异
+而 local blocks 随 query 移动。到 3.4 节讨论 $dK/dV$ 时，这种 fan-in 差异
 会直接变成负载不均。`[DERIVATION]`
 
 完整 shape 链为
@@ -317,55 +317,55 @@ compression probabilities       [T,Hq,≈T/16]
 HBM，通常只返回 output 与 LSE。因此，“复用 compression probability”只说明
 算法关系，还没有给出可执行的数据流。
 
-在 \(T=65536\) 上，完整窗口数实际为 \(C_T=4095\)。为说明固定 shape
+在 $T=65536$ 上，完整窗口数实际为 $C_T=4095$。为说明固定 shape
 allocation 的上界，令 padded capacity
 
-\[
+$$
 \bar C=\left\lceil T/d\right\rceil=4096.
-\]
+$$
 
 若按该 capacity 物化 per-head FP32 compressed scores，
 
-\[
+$$
 [T,H_q,\bar C],
-\]
+$$
 
 一层需要
 
-\[
+$$
 65536\times64\times4096\times4=64\ \mathrm{GiB}.
-\]
+$$
 
 若在 Eq. 9 remap **之前**先对每个 GQA group 求和，物化
 
-\[
+$$
 [T,H_{kv},\bar C],
-\]
+$$
 
 仍需
 
-\[
+$$
 65536\times4\times4096\times4=4\ \mathrm{GiB}.
-\]
+$$
 
 若讨论的是 remap **之后**的 group-reduced block scores，令
-\(M_T=\lceil T/\ell'\rceil=1024\)，其 shape 应为
-\[
+$M_T=\lceil T/\ell'\rceil=1024$，其 shape 应为
+$$
 [T,H_{kv},M_T],
-\]
+$$
 
 对应
 
-\[
+$$
 65536\times4\times1024\times4=1\ \mathrm{GiB}.
-\]
+$$
 
 这三个数字描述不同的数据流位置，不能混用。
 
 当前 FLA 给出了一种可行机制：保存 compression LSE，根据 Q 与 compressed K
-分块重算 probability，并用 bitonic merge 在线维护 Top-\(n\)，从而不物化上述
+分块重算 probability，并用 bitonic merge 在线维护 Top-$n$，从而不物化上述
 二次 score tensor。这条路径以重算换显存：Top-k kernel 必须再次用 Q 扫描
-compressed K，因此 routing 仍包含一次 \(\Theta(T^2/d)\) 的 QK scan 与候选
+compressed K，因此 routing 仍包含一次 $\Theta(T^2/d)$ 的 QK scan 与候选
 merge。它消除的是二次 score tensor 的 HBM materialization，不是二次 pair
 scoring 本身。
 
@@ -377,51 +377,51 @@ GQA group size 施加至少 16 且为 2 的幂等实现约束；这些都不是�
 ### 3.3 Selection Forward：逻辑 Gather，物理 Block Tile
 
 现在 block IDs 已经产生。Forward 只剩一个问题：是否先把 16 个 blocks
-gather 成紧凑的 \([1024,d]\) tensor？答案是否定的。这个 tensor 只应存在于
+gather 成紧凑的 $[1024,d]$ tensor？答案是否定的。这个 tensor 只应存在于
 数学视图中；kernel 应保存 IDs，并按 block 直接读取原始 KV。
 
 #### 从 16 个 IDs 到逻辑上的 1024 个 Tokens
 
 Routing 输出离散 block IDs：
 
-\[
+$$
 I^{\mathrm{slc}}_{t,g}
 =(j_0,\ldots,j_{n-1})\in\mathbb{Z}^{n}.
-\]
+$$
 
-每个 \(j_s\) 指向 selection K/V 中一段连续的 64-token block：
+每个 $j_s$ 指向 selection K/V 中一段连续的 64-token block：
 
-\[
+$$
 \mathcal B_{j_s}=\{j_s\ell',\ldots,(j_s+1)\ell'-1\},\qquad \ell'=64.
-\]
+$$
 
 对成熟 query，如果 16 个 slots 都有效，数学上可以拼成
 
-\[
+$$
 \widetilde K^{\mathrm{slc}}_{t,g}
 =
 \operatorname{Cat}_{s=0}^{n-1}
 K^{\mathrm{slc}}[\mathcal B_{j_s},g,:]
 \in\mathbb{R}^{1024\times192},
-\]
+$$
 
-\[
+$$
 \widetilde V^{\mathrm{slc}}_{t,g}
 =
 \operatorname{Cat}_{s=0}^{n-1}
 V^{\mathrm{slc}}[\mathcal B_{j_s},g,:]
 \in\mathbb{R}^{1024\times128}.
-\]
+$$
 
 逻辑 attention shapes 为
 
-\[
+$$
 [16,192][192,1024]\rightarrow[16,1024],\qquad [16,1024][1024,128]\rightarrow[16,128].
-\]
+$$
 
 这里的 1024 是 padded capacity，不是所有位置的有效 token 数。序列开头可能有无效 slots；包含当前位置的 causal block 也可能只有部分 token 可见。实现必须同时应用 ID mask、range mask 与 causal mask。
 
-这个 \([1024,d]\) 只是逻辑 shape。原始 KV 中仍是 16 段离散 blocks；每个
+这个 $[1024,d]$ 只是逻辑 shape。原始 KV 中仍是 16 段离散 blocks；每个
 block 内的 64 个 token rows 则可由一个 base 加规则 offsets 得到。NSA 改善的
 不是“16 个 blocks 彼此连续”，而是把 1024 次 token-level 间接寻址收敛成
 16 次 block-level 定位。
@@ -430,22 +430,22 @@ block 内的 64 个 token rows 则可由一个 base 加规则 offsets 得到。N
 个不规则 block bases，又要将它们组装为 compact selected-KV tensor 写回 HBM。
 仅 K/V payload 就有
 
-\[
+$$
 1024(192+128)\times2=655{,}360\ \mathrm{bytes}=640\ \mathrm{KiB}
-\]
+$$
 
 （BF16）。这些数据写入 HBM 后还要被 Attention 重新读取。因此 kernel 只保存
 IDs，并在内部按 block 加载原始 K/V。
 
 #### 一个 Program 最终写回什么
 
-**先看论文默认配置。** 此时 \(d_v=B_V=128\)，所以 \(N_V=1\)。一个
+**先看论文默认配置。** 此时 $d_v=B_V=128$，所以 $N_V=1$。一个
 program 对应一个 query position 和一个 KV group，独占 16 个 query heads 的
 完整 output：
 
-\[
+$$
 O^{\mathrm{slc}}[a,t,\mathcal H_g,:]:[16,128].
-\]
+$$
 
 这就是最重要的 ownership：同一个 program 既持有 16 条 softmax rows，也能
 让它们共同复用每个 selected block。
@@ -453,7 +453,7 @@ O^{\mathrm{slc}}[a,t,\mathcal H_g,:]:[16,128].
 **再展开通用 grid。** 当 value 维需要分成多个 tiles 时，完整 owner 还多一条
 value-feature 轴：
 
-\[
+$$
 \boxed{
 \text{一个 query position}
 \times
@@ -461,14 +461,14 @@ value-feature 轴：
 \times
 \text{一个 value-feature tile}
 }.
-\]
+$$
 
-它由 \((a,t,g,\nu)\) 唯一标识。这里 \(a\) 是 batch，\(t\) 是 query
-position，\(g\) 是 KV group，\(\nu\) 是 value-feature tile。
+它由 $(a,t,g,\nu)$ 唯一标识。这里 $a$ 是 batch，$t$ 是 query
+position，$g$ 是 KV group，$\nu$ 是 value-feature tile。
 
 对 fixed-length 输入，FLA 使用
 
-\[
+$$
 \begin{aligned}
 Q&:[B,T_Q,H_q,d_k],\\
 K^{\mathrm{slc}}&:[B,T_K,H_{kv},d_k],\\
@@ -479,71 +479,71 @@ I^{\mathrm{slc}}&:[B,T_Q,H_{kv},N_{\mathrm{slc}}],\\
 O^{\mathrm{slc}}&:[B,T_Q,H_q,d_v],\\
 \mathrm{LSE}^{\mathrm{slc}}&:[B,T_Q,H_q].
 \end{aligned}
-\]
+$$
 
 其中：
 
-- \(B\) 是 batch size；
-- \(T_Q,T_K\) 是每条序列在本次调用中的 query 与 KV token 数；
-- \(H_q,H_{kv}\) 是 query-head 与 KV-head 数；
-- \(G=H_q/H_{kv}\) 是一个 KV head 服务的 query-head 数；
-- \(d_k,d_v\) 是每个 head 的 Q/K feature 与 V/output feature 维度；
-- \(N_{\mathrm{slc}}\) 是 selection-ID 末维的 slot capacity，源码记作
+- $B$ 是 batch size；
+- $T_Q,T_K$ 是每条序列在本次调用中的 query 与 KV token 数；
+- $H_q,H_{kv}$ 是 query-head 与 KV-head 数；
+- $G=H_q/H_{kv}$ 是一个 KV head 服务的 query-head 数；
+- $d_k,d_v$ 是每个 head 的 Q/K feature 与 V/output feature 维度；
+- $N_{\mathrm{slc}}$ 是 selection-ID 末维的 slot capacity，源码记作
   `S`，本文配置为 16；
-- \(I^{\mathrm{slc}}\) 保存 block IDs；`block_counts` 若为 tensor，则记录
+- $I^{\mathrm{slc}}$ 保存 block IDs；`block_counts` 若为 tensor，则记录
   每个 query/group 的有效 slot 数，若为 scalar capacity，kernel 扫描全部
-  \(N_{\mathrm{slc}}\) 个 slots；
-- \(B_V\) 是一个 program 沿 value feature 轴计算的 tile 宽度；
-- \(N_V=\lceil d_v/B_V\rceil\) 是覆盖完整 value 维所需的 tile 数。
+  $N_{\mathrm{slc}}$ 个 slots；
+- $B_V$ 是一个 program 沿 value feature 轴计算的 tile 宽度；
+- $N_V=\lceil d_v/B_V\rceil$ 是覆盖完整 value 维所需的 tile 数。
 
-FLA 还假设 \(Q\) 对应每条 KV sequence 最后的 \(T_Q\) 个 tokens。因此
-fixed-length 路径中，query slot \(t\) 在 KV sequence 内的绝对位置不是
-简单的 \(t\)，而是
+FLA 还假设 $Q$ 对应每条 KV sequence 最后的 $T_Q$ 个 tokens。因此
+fixed-length 路径中，query slot $t$ 在 KV sequence 内的绝对位置不是
+简单的 $t$，而是
 
-\[
+$$
 p_t=T_K-T_Q+t.
-\]
+$$
 
-后面的 causal mask 与 selected-block 起点都相对于 \(p_t\) 判断。
+后面的 causal mask 与 selected-block 起点都相对于 $p_t$ 判断。
 
 源码中的 launch grid 是一个三维 **program-count tuple**：
 
-\[
+$$
 \boxed{
 \mathrm{grid}
 =
 \left(T_Q,\ N_V,\ B\times H_{kv}\right)
 }.
-\]
+$$
 
 源码将三个 program IDs 命名为 `i_t`、`i_v` 与 `i_bh`。为避免
-`i_v` 和 value tensor \(V\) 混淆，本文把第二个 ID 改记为 \(\nu\)：
+`i_v` 和 value tensor $V$ 混淆，本文把第二个 ID 改记为 $\nu$：
 
-\[
+$$
 t\in[0,T_Q),\qquad
 \nu\in[0,N_V),\qquad
 i_{bh}\in[0,B\times H_{kv}).
-\]
+$$
 
 它们依次表示 query position、value-feature tile，以及被压平的
 batch/KV-head 位置。第三个 ID 按
 
-\[
+$$
 a=\left\lfloor\frac{i_{bh}}{H_{kv}}\right\rfloor,\qquad
 g=i_{bh}\bmod H_{kv}
-\]
+$$
 
-还原成 batch index \(a\) 与 KV-head/group index \(g\)。这里特意用 \(a\)
-表示 batch，避免和后文的 KV block ID \(b\) 混淆。第 \(g\) 个 group
+还原成 batch index $a$ 与 KV-head/group index $g$。这里特意用 $a$
+表示 batch，避免和后文的 KV block ID $b$ 混淆。第 $g$ 个 group
 服务的 query heads 仍是
 
-\[
+$$
 \mathcal H_g=\{gG,\ldots,(g+1)G-1\}.
-\]
+$$
 
-再定义 program \(\nu\) 负责的 value-feature 区间
+再定义 program $\nu$ 负责的 value-feature 区间
 
-\[
+$$
 \mathcal D_\nu
 =
 \left\{
@@ -554,58 +554,58 @@ f\in\mathbb Z
 <
 \min\!\left((\nu+1)B_V,d_v\right)
 \right\}.
-\]
+$$
 
-于是 program \((t,\nu,i_{bh})\)，等价地说 \((a,t,g,\nu)\)，是下面这个输出
+于是 program $(t,\nu,i_{bh})$，等价地说 $(a,t,g,\nu)$，是下面这个输出
 slice 的唯一 writer：
 
-\[
+$$
 O^{\mathrm{slc}}
 \left[a,t,\mathcal H_g,\mathcal D_\nu\right]
 \in
 \mathbb{R}^{G\times|\mathcal D_\nu|}.
-\]
+$$
 
-物理 accumulator 按 \([G,B_V]\) 分配；最后一个不满 \(B_V\) 的 tile 通过
+物理 accumulator 按 $[G,B_V]$ 分配；最后一个不满 $B_V$ 的 tile 通过
 feature mask 处理。由此也能看清 axis 顺序：去掉 batch flattening 后 grid 是
-\((T_Q,N_V,H_{kv})\)，而不是 \((T_Q,H_{kv},N_V)\)。
+$(T_Q,N_V,H_{kv})$，而不是 $(T_Q,H_{kv},N_V)$。
 
-如果 \(N_V>1\)，同一个 \((a,t,g)\) 会展开成 \(N_V\) 个 programs；它们为各自
+如果 $N_V>1$，同一个 $(a,t,g)$ 会展开成 $N_V$ 个 programs；它们为各自
 的 value-feature slice 重算相同的 QK/softmax，但写入的
-\(\mathcal D_\nu\) 两两不交，因此 output 没有写冲突。LSE 不沿 value 维切分，
-源码只允许 \(\nu=0\) 的 program 写回
-\(\mathrm{LSE}^{\mathrm{slc}}[a,t,\mathcal H_g]\)。
+$\mathcal D_\nu$ 两两不交，因此 output 没有写冲突。LSE 不沿 value 维切分，
+源码只允许 $\nu=0$ 的 program 写回
+$\mathrm{LSE}^{\mathrm{slc}}[a,t,\mathcal H_g]$。
 
-回到论文配置，\(d_v=128\)，当前 FLA 也取 \(B_V=128\)，所以
+回到论文配置，$d_v=128$，当前 FLA 也取 $B_V=128$，所以
 
-\[
+$$
 N_V=1,\qquad \mathcal D_0=\{0,\ldots,127\}.
-\]
+$$
 
-此时每个 \((a,t,g)\) 恰好只对应一个 program，它独占
-\([G,d_v]=[16,128]\) 的完整 selection output。该 program 随后加载并常驻
+此时每个 $(a,t,g)$ 恰好只对应一个 program，它独占
+$[G,d_v]=[16,128]$ 的完整 selection output。该 program 随后加载并常驻
 逻辑 query tile
 
-\[
+$$
 Q_{a,t,\mathcal H_g,:}
 \in\mathbb{R}^{G\times d_k}
 =
 \mathbb{R}^{16\times192}.
-\]
+$$
 
 #### 一个 64-Token Block 怎样变成规则 Tile
 
-随后循环 16 个 selection slots。本文用 \(B_{\mathrm{kv}}\) 表示一次内循环
+随后循环 16 个 selection slots。本文用 $B_{\mathrm{kv}}$ 表示一次内循环
 加载并计算的 KV-token row 数；在当前 FLA 路径中，它对应源码参数 `BS`，并
-恰好等于 NSA 的 selection block length \(\ell'\)：
+恰好等于 NSA 的 selection block length $\ell'$：
 
-\[
+$$
 B_{\mathrm{kv}}=\texttt{BS}=\ell'=64.
-\]
+$$
 
-对一个有效 block ID \(j_s\)，program 计算 \(\mathrm{base}=j_s\ell'\)，并加载
+对一个有效 block ID $j_s$，program 计算 $\mathrm{base}=j_s\ell'$，并加载
 
-\[
+$$
 K^{\mathrm{slc}}_{j_s}
 \in\mathbb{R}^{B_{\mathrm{kv}}\times d_k}
 =
@@ -615,86 +615,86 @@ V^{\mathrm{slc}}_{j_s}
 \in\mathbb{R}^{B_{\mathrm{kv}}\times d_v}
 =
 \mathbb{R}^{64\times128}.
-\]
+$$
 
 这是算法层面的逻辑 tile。在当前 FLA 的 Hopper 分支中，
 
-\[
+$$
 \texttt{BK}
 =
 \min\!\left(256,\operatorname{nextPow2}(d_k)\right)
 =
 256,
-\]
+$$
 
 所以为了匹配 Triton dot 的 feature tile，实际构造
 
-\[
+$$
 b_Q:[16,256],\qquad
 b_K:[256,64],\qquad
 b_V:[64,128],
-\]
+$$
 
-其中 feature 维 \(192\rightarrow256\) 的尾部通过 mask/padding 处理。因此逻辑
+其中 feature 维 $192\rightarrow256$ 的尾部通过 mask/padding 处理。因此逻辑
 contraction 是
 
-\[
+$$
 [16,192][192,64]\rightarrow[16,64],\qquad [16,64][64,128]\rightarrow[16,128].
-\]
+$$
 
 而 QK 的物理 padded execution shape 是
 
-\[
+$$
 [16,256][256,64]\rightarrow[16,64].
-\]
+$$
 
-这组 \(192\rightarrow256\) 的执行 shape 是 **当前 FLA Hopper 路径**的
-结论。非 Hopper 分支将 `BK` 上限设为 128；当 \(d_k=192\) 时会得到两个
+这组 $192\rightarrow256$ 的执行 shape 是 **当前 FLA Hopper 路径**的
+结论。非 Hopper 分支将 `BK` 上限设为 128；当 $d_k=192$ 时会得到两个
 feature tiles，并触发源码的 `NK == 1` 断言，因此不能把这里的
-\([16,256][256,64]\) 直接外推到该路径。
+$[16,256][256,64]$ 直接外推到该路径。
 
 动态性只存在于每轮加载前的 block base；进入片上 tile 后，计算重新变成固定 shape。
 
-这里特意不用 \(B_K\) 表示 token tile。NSA 论文中的 token-tile 记号 \(B_K\) 在当前 FLA 源码中对应 `BS`；FLA 的 `BK` 表示 padded feature width，例如
+这里特意不用 $B_K$ 表示 token tile。NSA 论文中的 token-tile 记号 $B_K$ 在当前 FLA 源码中对应 `BS`；FLA 的 `BK` 表示 padded feature width，例如
 
-\[
+$$
 d_k=192\longrightarrow \texttt{BK}=256.
-\]
+$$
 
 混用两套记号会把“64 个 tokens”误读成“256 个 feature elements”。
 
-**在线归一化。** Program 对 16 个 blocks 使用前文统一介绍的 exact online-softmax merge，只维护每个 query head 的 running max、normalizer 与 output accumulator，不写出 \(P^{\mathrm{slc}}\in\mathbb{R}^{16\times1024}\)。所有 selected blocks 完成后直接写回
+**在线归一化。** Program 对 16 个 blocks 使用前文统一介绍的 exact online-softmax merge，只维护每个 query head 的 running max、normalizer 与 output accumulator，不写出 $P^{\mathrm{slc}}\in\mathbb{R}^{16\times1024}$。所有 selected blocks 完成后直接写回
 
-\[
+$$
 O^{\mathrm{slc}}_{a,t,\mathcal H_g,:}
 \in\mathbb{R}^{16\times128}.
-\]
+$$
 
 因此 output 拥有唯一 writer，forward 不需要对 output 做 atomic reduction。
 
 **为什么 head sharing 是执行契约。** 对一个 64-token block，QK 与 PV 的乘加量约为
 
-\[
+$$
 2\,G\,B_{\mathrm{kv}}(d_k+d_v)
 =
 2\times16\times64\times(192+128)
 =
 655{,}360\ \mathrm{FLOPs}.
-\]
+$$
 
 若 K/V 为 BF16，本轮主要 K/V payload 为
 
-\[
+$$
 2\,B_{\mathrm{kv}}(d_k+d_v)
 =
 2\times64\times(192+128)
 =
 40{,}960\ \mathrm{bytes}.
-\]
+$$
 
 只看这份被 16 个 heads 共享的 K/V payload，局部 arithmetic intensity 为
 
-\[
+$$
 \frac{
 2\,G\,B_{\mathrm{kv}}(d_k+d_v)
 }{
@@ -704,17 +704,17 @@ O^{\mathrm{slc}}_{a,t,\mathcal H_g,:}
 G
 =
 16\ \mathrm{FLOP/byte}.
-\]
+$$
 
 这不是整 kernel 的 roofline 数字：它没有计入 Q、output、indices、LSE、mask 和 launch 开销。它只说明，同一 K/V block 被越多 query heads 复用，一次不连续寻址带来的搬运就越容易被规则 matmul 摊薄。
 
 对成熟 query，selection 主循环有 16 个 slots；序列开头仍运行相同控制结构，但无效 slots 被 mask。NSA 提供的是“固定容量、可 padding 的 workload”，而不是没有边界条件的绝对固定工作量。
 
 > **可跳读的实现补充：variable-length 不改变 ownership。** 公开路径将多条
-> 不等长序列 pack 到 batch 轴为 1 的 tensor 中。第一条 grid 轴由 \(T_Q\)
-> 改成总 query 数 \(T_Q^{\mathrm{total}}\)，再通过 `token_indices_q` 找回每个
-> query 的序列号与局部位置；另外两条轴仍是 \((N_V,H_{kv})\)。因此 varlen
-> 只改变 \((a,t)\) 的定位方式，不改变“一个 program 唯一写一个 output
+> 不等长序列 pack 到 batch 轴为 1 的 tensor 中。第一条 grid 轴由 $T_Q$
+> 改成总 query 数 $T_Q^{\mathrm{total}}$，再通过 `token_indices_q` 找回每个
+> query 的序列号与局部位置；另外两条轴仍是 $(N_V,H_{kv})$。因此 varlen
+> 只改变 $(a,t)$ 的定位方式，不改变“一个 program 唯一写一个 output
 > slice”的 ownership。完整 packed shapes 为
 >
 > \[
@@ -727,13 +727,13 @@ G
 
 > **Takeaway.** Forward 的 `query → selected blocks` 关系只给 output 找到了
 > owner。若继续使用 query-centric ownership，
-> \(dK^{\mathrm{slc}}/dV^{\mathrm{slc}}\) 需要浮点 atomics
+> $dK^{\mathrm{slc}}/dV^{\mathrm{slc}}$ 需要浮点 atomics
 > 或 partial-gradient reduction；本文审计的 FLA 社区实现选择把它转置为
 > `KV block → selecting queries`，再让每个 KV-block program 完成自己的
 > many-to-one reduction。
 
 Forward 的自然 owner 是 query，因为每个 program 能独立完成一个
-\(O^{\mathrm{slc}}_{t,\mathcal H_g,:}\)。Backward 则有两种归约方向。
+$O^{\mathrm{slc}}_{t,\mathcal H_g,:}$。Backward 则有两种归约方向。
 
 以下只讨论 selection branch 的 backward。完整 NSA 还包括 gates、compression
 branch、sliding branch，以及三个分支对共享 Q/input 的梯度合并。
@@ -743,28 +743,28 @@ branch、sliding branch，以及三个分支对共享 Q/input 的梯度合并。
 Selection backward 不需要保存完整 probability matrix。当前
 FLA 首先由 forward output 与上游梯度计算每个 softmax row 的
 
-\[
+$$
 \Delta_{a,t,h}
 =
 \sum_{f=0}^{d_v-1}
 O^{\mathrm{slc}}_{a,t,h,f}
 \,dO^{\mathrm{slc}}_{a,t,h,f}.
-\]
+$$
 
-随后根据 \(Q,K^{\mathrm{slc}},I^{\mathrm{slc}}\) 与
-\(\mathrm{LSE}^{\mathrm{slc}}\) 分块重算 score/probability。对
-batch/sequence \(a\)、query \(t\)、group \(g\) 与 selected block \(b\)，
+随后根据 $Q,K^{\mathrm{slc}},I^{\mathrm{slc}}$ 与
+$\mathrm{LSE}^{\mathrm{slc}}$ 分块重算 score/probability。对
+batch/sequence $a$、query $t$、group $g$ 与 selected block $b$，
 有
 
-\[
+$$
 dP^{\mathrm{slc}}_{a,t,g,b}
 =
 dO^{\mathrm{slc}}_{a,t,\mathcal H_g,:}
 \left(V^{\mathrm{slc}}_{a,g,b}\right)^\top
 \in\mathbb{R}^{G\times B_{\mathrm{kv}}},
-\]
+$$
 
-\[
+$$
 dS^{\mathrm{slc}}_{a,t,g,b}
 =
 P^{\mathrm{slc}}_{a,t,g,b}
@@ -775,133 +775,133 @@ dP^{\mathrm{slc}}_{a,t,g,b}
 \Delta_{a,t,\mathcal H_g}[:,\mathrm{None}]
 \right)
 \in\mathbb{R}^{G\times B_{\mathrm{kv}}}.
-\]
+$$
 
-这里 \(V^{\mathrm{slc}}_{a,g,b}\) 表示 block \(b\) 内
-\(B_{\mathrm{kv}}\) 行 value vectors，shape 为
-\([B_{\mathrm{kv}},d_v]\)。相应的局部量 shapes 为
+这里 $V^{\mathrm{slc}}_{a,g,b}$ 表示 block $b$ 内
+$B_{\mathrm{kv}}$ 行 value vectors，shape 为
+$[B_{\mathrm{kv}},d_v]$。相应的局部量 shapes 为
 
-\[
+$$
 S^{\mathrm{slc}}_{a,t,g,b},\qquad
 P^{\mathrm{slc}}_{a,t,g,b},\qquad
 dS^{\mathrm{slc}}_{a,t,g,b}
 \in\mathbb{R}^{G\times B_{\mathrm{kv}}}.
-\]
+$$
 
 若不使用 activation checkpoint，FLA selection autograd state 至少包括
 
-\[
+$$
 Q,\quad K^{\mathrm{slc}},\quad V^{\mathrm{slc}},\quad
 O^{\mathrm{slc}},\quad \mathrm{LSE}^{\mathrm{slc}},\quad
 I^{\mathrm{slc}},
-\]
+$$
 
 以及 variable-length 场景所需的 block counts 和 sequence metadata。当前 FLA
 的 autograd 路径实际保存 `q, k, v, o, lse`，并在 context 中保留 block
-indices 等 metadata。准确结论是“不保存 \(P^{\mathrm{slc}}\)”，而不是
+indices 等 metadata。准确结论是“不保存 $P^{\mathrm{slc}}$”，而不是
 “forward 只需保存
-\(O^{\mathrm{slc}},\mathrm{LSE}^{\mathrm{slc}},I^{\mathrm{slc}}\)”。
+$O^{\mathrm{slc}},\mathrm{LSE}^{\mathrm{slc}},I^{\mathrm{slc}}$”。
 
-#### \(dQ\) 继续由 Query 拥有
+#### $dQ$ 继续由 Query 拥有
 
-对 query \(t\)，只有它自己选择的 blocks 参与
+对 query $t$，只有它自己选择的 blocks 参与
 
-\[
+$$
 dQ^{\mathrm{slc}}_{a,t,\mathcal H_g,:}
 =
 \alpha
 \sum_{b\in I^{\mathrm{slc}}_{a,t,g}}
 dS^{\mathrm{slc}}_{a,t,g,b}
 K^{\mathrm{slc}}_{a,g,b}.
-\]
+$$
 
 每个 block 的局部 shape 为
 
-\[
+$$
 [G,B_{\mathrm{kv}}][B_{\mathrm{kv}},d_k]\rightarrow[G,d_k].
-\]
+$$
 
 同一 program 可以循环全部 slots。逻辑上的最终结果为
 
-\[
+$$
 dQ^{\mathrm{slc}}_{a,t,\mathcal H_g,:}
 \in\mathbb{R}^{16\times192},
-\]
+$$
 
 而当前 Triton kernel 取
 
-\[
+$$
 \texttt{BK}=\operatorname{nextPow2}(d_k)=256,
-\]
+$$
 
-所以物理 accumulator `b_dq` 的 shape 是 \([16,256]\)；末尾 64 个 padded
+所以物理 accumulator `b_dq` 的 shape 是 $[16,256]$；末尾 64 个 padded
 feature lanes 由 mask 处理，最终只写回前 192 维。因此 dQ 仍适合
 query-centric ownership。
 
 源码中 fixed-length 的 dQ launch grid 为
 
-\[
+$$
 \mathrm{grid}_{dQ}
 =
 \left(T,N_V,BH_{kv}\right).
-\]
+$$
 
 Backward 取
 
-\[
+$$
 B_V=\max\!\left(\operatorname{nextPow2}(d_v),16\right),
 \qquad
 N_V=\left\lceil\frac{d_v}{B_V}\right\rceil=1,
-\]
+$$
 
-使 softmax backward 中的 \(\Delta\) 始终对应完整 value 维。因此当前路径中
-program \((t,0,i_{bh})\)，等价地说 \((a,t,g)\)，独占一个
-\([G,d_k]\) 的 dQ slice。variable-length 路径只把第一条 grid 轴换成 packed
+使 softmax backward 中的 $\Delta$ 始终对应完整 value 维。因此当前路径中
+program $(t,0,i_{bh})$，等价地说 $(a,t,g)$，独占一个
+$[G,d_k]$ 的 dQ slice。variable-length 路径只把第一条 grid 轴换成 packed
 token 位置，ownership 不变。
 
-#### \(dK/dV\) 为什么不能继续由 Query 拥有
+#### $dK/dV$ 为什么不能继续由 Query 拥有
 
-一个 KV block \(b\) 可能被许多 queries 选中。令
+一个 KV block $b$ 可能被许多 queries 选中。令
 
-\[
+$$
 \mathcal Q_{a,g,b}
 =
 \left\{t\mid b\in I^{\mathrm{slc}}_{a,t,g}\right\}.
-\]
+$$
 
 它的梯度是跨 queries 的 many-to-one reduction：
 
-\[
+$$
 dK^{\mathrm{slc}}_{a,g,b}
 =
 \alpha
 \sum_{t\in\mathcal Q_{a,g,b}}
 \left(dS^{\mathrm{slc}}_{a,t,g,b}\right)^\top
 Q_{a,t,\mathcal H_g,:},
-\]
+$$
 
-\[
+$$
 [B_{\mathrm{kv}},G][G,d_k]
 \rightarrow
 [B_{\mathrm{kv}},d_k],
-\]
+$$
 
-\[
+$$
 dV^{\mathrm{slc}}_{a,g,b}
 =
 \sum_{t\in\mathcal Q_{a,g,b}}
 \left(P^{\mathrm{slc}}_{a,t,g,b}\right)^\top
 dO^{\mathrm{slc}}_{a,t,\mathcal H_g,:},
-\]
+$$
 
-\[
+$$
 [B_{\mathrm{kv}},G][G,d_v]
 \rightarrow
 [B_{\mathrm{kv}},d_v].
-\]
+$$
 
 若沿用 query owner，不同 programs 会同时更新相同的
-\(dK^{\mathrm{slc}}_b,dV^{\mathrm{slc}}_b\)，只能使用大量 floating-point
+$dK^{\mathrm{slc}}_b,dV^{\mathrm{slc}}_b$，只能使用大量 floating-point
 atomics，或写 partial buffers 再归约。更自然的办法是先转置稀疏关系：
 
 ```text
@@ -909,48 +909,48 @@ forward adjacency:   query → selected KV blocks
 backward adjacency:  KV block → all selecting queries
 ```
 
-然后让一个 program 拥有一个 \((a,g,b)\) KV block。
+然后让一个 program 拥有一个 $(a,g,b)$ KV block。
 
 #### 转置稀疏图，让 KV Block 成为唯一 Owner
 
 这里先看 fixed-length 路径。令完整序列的
 block 数为
 
-\[
+$$
 M=\left\lceil T/\ell'\right\rceil.
-\]
+$$
 
-将一个 KV block \((a,g,b)\) 压平为 row
+将一个 KV block $(a,g,b)$ 压平为 row
 
-\[
+$$
 r(a,g,b)=\bigl(aH_{kv}+g\bigr)M+b.
-\]
+$$
 
 CSR 用两个一维 arrays 保存“每个 block 被哪些 queries 选中”：
 
-\[
+$$
 \texttt{csr\_offsets}
 \in\mathbb{Z}^{B H_{kv}M+1},
-\]
+$$
 
-\[
+$$
 \texttt{csr\_indices}
 \in\mathbb{Z}^{E_{\mathrm{alloc}}},
 \qquad
 E_{\mathrm{alloc}}=B T H_{kv}n.
-\]
+$$
 
 其中 `csr_indices` 分配到 padded edge capacity；只有
 `csr_offsets[-1]` 之前的 prefix 有效。源码存入的是压平后的 absolute query
 position
 
-\[
+$$
 q_{\mathrm{abs}}=aT+t,
-\]
+$$
 
-因此 row \(r=r(a,g,b)\) 满足
+因此 row $r=r(a,g,b)$ 满足
 
-\[
+$$
 \left\{aT+t\mid t\in\mathcal Q_{a,g,b}\right\}
 =
 \texttt{csr\_indices}
@@ -958,7 +958,7 @@ q_{\mathrm{abs}}=aT+t,
 \texttt{csr\_offsets}[r]:
 \texttt{csr\_offsets}[r+1]
 \right].
-\]
+$$
 
 当前 FLA 通过 counting-scatter 构造它：
 
@@ -970,65 +970,65 @@ q_{\mathrm{abs}}=aT+t,
 ```
 
 atomic 只作用于紧凑整数 metadata；昂贵的
-\(dK^{\mathrm{slc}}/dV^{\mathrm{slc}}\) 浮点归约则获得唯一 owner。variable-length
+$dK^{\mathrm{slc}}/dV^{\mathrm{slc}}$ 浮点归约则获得唯一 owner。variable-length
 路径改用 packed block/query IDs，但“一个 CSR row 对应一个 KV-block owner”的
 关系不变。这里真正重要的不是 CSR 格式本身，而是它完成了从 query-centric
 到 KV-centric 的稀疏图转置。
 
 **KV-centric dKV tile。** fixed-length 的 dKV launch grid 为
 
-\[
+$$
 \mathrm{grid}_{dKV}
 =
 \left(N_V,BH_{kv}M\right).
-\]
+$$
 
-由于当前 backward 路径中 \(N_V=1\)，program
-\((0,r(a,g,b))\) 是 KV block \((a,g,b)\) 的唯一 writer。variable-length
-路径将第二条 grid 轴替换为“packed KV blocks 数 \(\times H_{kv}\)”，但仍然
+由于当前 backward 路径中 $N_V=1$，program
+$(0,r(a,g,b))$ 是 KV block $(a,g,b)$ 的唯一 writer。variable-length
+路径将第二条 grid 轴替换为“packed KV blocks 数 $\times H_{kv}$”，但仍然
 由一个 program 独占一个 KV block。该 program 持有
 
-\[
+$$
 K_b\in\mathbb{R}^{B_{\mathrm{kv}}\times d_k},\qquad V_b\in\mathbb{R}^{B_{\mathrm{kv}}\times d_v}
-\]
+$$
 
-和同 shape 的 gradient accumulators。它从对应 CSR row 每次读取 \(B_{\mathrm{qry}}\) 个 query positions，并展开每个 query 的 \(G\) 个 heads：
+和同 shape 的 gradient accumulators。它从对应 CSR row 每次读取 $B_{\mathrm{qry}}$ 个 query positions，并展开每个 query 的 $G$ 个 heads：
 
-\[
+$$
 R=B_{\mathrm{qry}}G.
-\]
+$$
 
 批内 query 与 output-gradient shapes 为
 
-\[
+$$
 Q_{\mathrm{batch}}\in\mathbb{R}^{R\times d_k},\qquad dO_{\mathrm{batch}}\in\mathbb{R}^{R\times d_v}.
-\]
+$$
 
 局部重算与归约重新形成规则 matmul：
 
-\[
+$$
 [B_{\mathrm{kv}},d_k][d_k,R]\rightarrow[B_{\mathrm{kv}},R],
-\]
+$$
 
-\[
+$$
 [B_{\mathrm{kv}},R][R,d_v]\rightarrow[B_{\mathrm{kv}},d_v],\qquad [B_{\mathrm{kv}},R][R,d_k]\rightarrow[B_{\mathrm{kv}},d_k].
-\]
+$$
 
-例如 \(B_{\mathrm{kv}}=64,B_{\mathrm{qry}}=4,G=16\) 时，\(R=64\)。逻辑上的
+例如 $B_{\mathrm{kv}}=64,B_{\mathrm{qry}}=4,G=16$ 时，$R=64$。逻辑上的
 score-recompute contraction 为
 
-\[
+$$
 [64,192][192,64]\rightarrow[64,64].
-\]
+$$
 
-当前 Triton kernel 的 \(\texttt{BK}=256\)，所以实际 `tl.dot` tile 是
+当前 Triton kernel 的 $\texttt{BK}=256$，所以实际 `tl.dot` tile 是
 
-\[
+$$
 [64,256][256,64]\rightarrow[64,64],
-\]
+$$
 
 其中末尾 64 个 feature lanes 由 mask 补零；`b_dk` 也相应使用
-\([64,256]\) 的物理 accumulator，再只写回前 192 维。
+$[64,256]$ 的物理 accumulator，再只写回前 192 维。
 
 CSR 的作用不只是压缩 metadata。它把“多个 queries 向同一 KV gradient 地址写入”的冲突，改写为“一个 KV owner 顺序读取自己的 queries”，再在 owner 内部恢复规则 Tensor Core tile。
 
@@ -1036,14 +1036,14 @@ CSR 的作用不只是压缩 metadata。它把“多个 queries 向同一 KV gra
 
 定义
 
-\[
+$$
 NQ_{a,g,b}=|\mathcal Q_{a,g,b}|.
-\]
+$$
 
 当 `block_counts=16` 是固定标量 capacity 时，
-\(dQ^{\mathrm{slc}}\) program 扫描固定的 16 个 padded slots；FLA 也接受逐
-query 的 tensor `block_counts`，此时运行时 \(N_S\) 可以缩短。dKV program
-的循环长度则由 \(NQ_{a,g,b}\) 决定。fixed initial/sink block，以及由动态 ranking 形成的热门
+$dQ^{\mathrm{slc}}$ program 扫描固定的 16 个 padded slots；FLA 也接受逐
+query 的 tensor `block_counts`，此时运行时 $N_S$ 可以缩短。dKV program
+的循环长度则由 $NQ_{a,g,b}$ 决定。fixed initial/sink block，以及由动态 ranking 形成的热门
 blocks，可能拥有远高于平均值的 fan-in，形成长尾 CTA；移动的 local slots
 本身只产生有界的局部 fan-in。拆分热门 row 可以改善负载均衡，却会重新引入
 partial reduction 或 atomic。Backward 因而把问题从“跳过多少 FLOPs”转成了
@@ -1062,26 +1062,26 @@ kernel 的 backward latency。`[DERIVATION] [CODE/community] [GAP]`
 在论文默认配置下，NSA selection 能映射为高效 kernel，是因为算法主动提供
 三项执行契约：
 
-\[
+$$
 \boxed{\text{连续的 64-token blocks}+\text{16 个 heads 共享 IDs}+\text{固定 16 个可 padding slots}}
-\]
+$$
 
 Routing 输出的每个动态 ID 已经对应一段连续的 64-token block。因此，kernel
 在 load 之前就知道：不规则性只存在于 block base，block 内 64 个 token 可以
-通过规则的 affine offsets 展开。Program 加载规则的 \([64,d]\) K/V tile，
-再与共享该组 IDs 的 16 个 query heads 形成 \([16,64]\) score tile。本文分析
+通过规则的 affine offsets 展开。Program 加载规则的 $[64,d]$ K/V tile，
+再与共享该组 IDs 的 16 个 query heads 形成 $[16,64]$ score tile。本文分析
 的 FLA community backward 则进一步转置稀疏图，让 KV block 成为
-\(dK^{\mathrm{slc}}/dV^{\mathrm{slc}}\) 的唯一 owner。
+$dK^{\mathrm{slc}}/dV^{\mathrm{slc}}$ 的唯一 owner。
 
 这也给出三个不能越过的边界。
 
 第一，NSA 不是“任意 block sparsity 都会自动加速”的证据。真正产生硬件效率的是连续 block、head sharing、固定 slot capacity 与明确 ownership 同时成立。
 
-第二，selection 与 sliding 的 token budget 在成熟位置近似固定，但 compression 仍访问约 \(L_t/d\) 行 compressed K/V。固定 \(d\) 时，全层 compression 仍为 \(\Theta(T^2/d)\)。
+第二，selection 与 sliding 的 token budget 在成熟位置近似固定，但 compression 仍访问约 $L_t/d$ 行 compressed K/V。固定 $d$ 时，全层 compression 仍为 $\Theta(T^2/d)$。
 
 第三，FLA 展示了 online Top-k、group-centric forward 与 CSR backward 的一套完整可行机制；它不能证明论文作者的未公开实现采用相同 routing materialization、tile 参数或 inverse-adjacency construction。
 
-论文报告，在其 \(G=16,\ell'=64,n=16\) 配置与 A100 测试环境中，作者的 Triton NSA 相比 Triton FlashAttention-2 在 64K 达到 9.0× forward 与 6.0× backward speedup。这个结果可以归因于论文报告的完整系统，不能直接归因于本文从社区代码拆出的某一个 kernel 选择。`[PAPER] [GAP]`
+论文报告，在其 $G=16,\ell'=64,n=16$ 配置与 A100 测试环境中，作者的 Triton NSA 相比 Triton FlashAttention-2 在 64K 达到 9.0× forward 与 6.0× backward speedup。这个结果可以归因于论文报告的完整系统，不能直接归因于本文从社区代码拆出的某一个 kernel 选择。`[PAPER] [GAP]`
 
 换句话说，NSA 最值得复用的不是某一条稀疏公式，而是一种共同设计方法：
 
@@ -1096,7 +1096,7 @@ NSA 与 DSA 不是简单的“旧方案”和“新方案”。NSA 选择 block�
 ### 4.1 Infra：连续 Block 不再是规则性的唯一来源
 
 先看 NSA 面对的问题。任意 token selection 会产生大量离散 KV row；在训练中，
-这些 rows 还要参与 \(dK/dV\) 的反向归约。NSA 因而把选择单位固定为连续
+这些 rows 还要参与 $dK/dV$ 的反向归约。NSA 因而把选择单位固定为连续
 64-token block。代价是 selection 只能表达“这一段值得看”，不能只取 block
 中真正相关的几个 token。换句话说，NSA 用选择粒度换取了 load 前的规则性。
 `[PAPER]`
@@ -1118,8 +1118,8 @@ heads；FlashMLA 可以把随机寻址留给 producer，再让 Tensor Core consu
 
 这给 DSA 更细的内容选择能力，但不是免费的升级。NSA 的 routing 在压缩后的
 token 轴上进行；DSA 的 Indexer 保留完整 token 分辨率，随后还要执行 exact
-Top-K。它把主 Attention 限制为 \(O(L\kappa)\)，却没有消除 Discovery 的
-\(O(L^2)\)。所以这次变化更准确的描述是：**用更强的跨 head 复用和专用
+Top-K。它把主 Attention 限制为 $O(L\kappa)$，却没有消除 Discovery 的
+$O(L^2)$。所以这次变化更准确的描述是：**用更强的跨 head 复用和专用
 gather kernel，换取 token-level selection；再把系统瓶颈从 sparse main
 Attention 推向 Indexer 与 Top-K。** `[DERIVATION]`
 
@@ -1153,79 +1153,79 @@ contract、DSA 对 MLA/MQA sharing 的选择，以及它的 continued-training �
 
 DSA 的完整前向链只有三个阶段：
 
-\[
+$$
 \text{低维 Indexer 扫描历史} \rightarrow \text{所有主 heads 共享 token IDs} \rightarrow \text{FlashMLA 在 SMEM 中重建规则 tile}.
-\]
+$$
 
 下面逐阶段展开，并保留理解 shape 所需的记号。
 
 | 符号 | 含义 | DeepSeek-V3.2 |
 |---|---|---:|
-| \(T_Q,T_K\) | 本次调用的 query 数与可见 KV 数 | 运行时决定 |
-| \(H_I,D_I\) | Indexer head 数与维度 | \(64,128\) |
-| \(H\) | 主 MLA query heads | \(128\) |
-| \(D_C,D_R\) | latent KV 与 RoPE 维度 | \(512,64\) |
-| \(D_N\) | 原始主 MHA NoPE 维度 | \(128\) |
-| \(D_V^{\mathrm{MHA}}\) | 原始 MHA value 维度 | \(128\) |
-| \(\kappa\) | 每个 query 最多选择的 tokens | \(2048\) |
+| $T_Q,T_K$ | 本次调用的 query 数与可见 KV 数 | 运行时决定 |
+| $H_I,D_I$ | Indexer head 数与维度 | $64,128$ |
+| $H$ | 主 MLA query heads | $128$ |
+| $D_C,D_R$ | latent KV 与 RoPE 维度 | $512,64$ |
+| $D_N$ | 原始主 MHA NoPE 维度 | $128$ |
+| $D_V^{\mathrm{MHA}}$ | 原始 MHA value 维度 | $128$ |
+| $\kappa$ | 每个 query 最多选择的 tokens | $2048$ |
 
-这里的 \(D_V^{\mathrm{MHA}}=128\) 不能和 FlashMLA 内部的 latent value 维度 \(D_C=512\) 混写。主 Attention 也有两套代数等价、执行 shape 不同的表示：
+这里的 $D_V^{\mathrm{MHA}}=128$ 不能和 FlashMLA 内部的 latent value 维度 $D_C=512$ 混写。主 Attention 也有两套代数等价、执行 shape 不同的表示：
 
-\[
+$$
 D_{QK}^{\mathrm{MHA}} =D_N+D_R =192,
-\]
+$$
 
-\[
+$$
 D_{QK}^{\mathrm{MQA}} =D_C+D_R =576.
-\]
+$$
 
 ### 5.1 Indexer：低维，但仍扫描全部历史
 
 #### 第一步：为每个 Query–Token Pair 打分
 
-Indexer 的任务只有一个：为 query \(t\) 和每个历史 token \(s\) 计算便宜的
-routing score，再选出 Top-\(\kappa\)。论文公式是
+Indexer 的任务只有一个：为 query $t$ 和每个历史 token $s$ 计算便宜的
+routing score，再选出 Top-$\kappa$。论文公式是
 
-\[
+$$
 I_{t,s}
 =
 \sum_{j=0}^{H_I-1}
 w^I_{t,j}
 \operatorname{ReLU}
 \left(\left\langle q^I_{t,j},k^I_s\right\rangle\right),
-\]
+$$
 
 其中
 
-\[
+$$
 q^I_t:[H_I,D_I]=[64,128],\qquad
 k^I_s:[D_I]=[128],\qquad
 w^I_t:[H_I]=[64].
-\]
+$$
 
 对全部 query 与历史，最终 routing-score matrix 为
 
-\[
+$$
 I:[T_Q,T_K].
-\]
+$$
 
 后面的 projection、RoPE、Hadamard、FP8 和 DeepGEMM fusion 都在回答同一件
-事：怎样以更低代价计算这个 \([T_Q,T_K]\)，而不把更大的
-\([T_Q,64,T_K]\) 中间量写进 HBM。
+事：怎样以更低代价计算这个 $[T_Q,T_K]$，而不把更大的
+$[T_Q,64,T_K]$ 中间量写进 HBM。
 
 DSA 一层里同时存在两种 score：
 
-\[
+$$
 I:[T_Q,T_K],
-\]
+$$
 
 以及
 
-\[
+$$
 A^{\mathrm{slc}}:[T_Q,H,\kappa].
-\]
+$$
 
-\(I\) 是 Lightning Indexer 的 routing score，只负责产生 token address；\(A^{\mathrm{slc}}\) 是主 MLA 在 selected tokens 上重新计算的 attention logit，只有它会进入主 Attention 的 softmax。
+$I$ 是 Lightning Indexer 的 routing score，只负责产生 token address；$A^{\mathrm{slc}}$ 是主 MLA 在 selected tokens 上重新计算的 attention logit，只有它会进入主 Attention 的 softmax。
 
 Indexer 决定“去哪里看”；主 MLA 再决定“看见以后怎样加权”。
 
@@ -1233,47 +1233,47 @@ Indexer 决定“去哪里看”；主 MLA 再决定“看见以后怎样加权�
 
 归一化 hidden states
 
-\[
+$$
 X:[T_Q,7168]
-\]
+$$
 
 先生成主 MLA 与 Indexer 共用的低秩 query latent：
 
-\[
+$$
 C^Q = \operatorname{RMSNorm} \left( X(W^{Q,A})^{\mathsf T} \right) : [T_Q,1536].
-\]
+$$
 
-Indexer 不再从 7168-D hidden 独立做一次大投影，而是从 \(C^Q\) 得到：
+Indexer 不再从 7168-D hidden 独立做一次大投影，而是从 $C^Q$ 得到：
 
-\[
+$$
 \widehat Q^I = C^Q(W^{IQ})^{\mathsf T} : [T_Q,1536] \rightarrow [T_Q,64\cdot128].
-\]
+$$
 
 reshape 后：
 
-\[
+$$
 Q^I:[T_Q,64,128].
-\]
+$$
 
 发布版公开 DeepGEMM 接口以物化的 FP8 Q 为输入；生产系统是否把这段 projection、旋转和量化进一步融合，公开代码没有给出答案。
 
 历史 token 的 Indexer key 则只有一条共享向量：
 
-\[
+$$
 k^I_s = \operatorname{LayerNorm} \left( W^{IK}x_s \right) \in\mathbb R^{128}.
-\]
+$$
 
 持久 cache 的逻辑 shape 为：
 
-\[
+$$
 K^I_{\mathrm{cache}}:[T_K,128].
-\]
+$$
 
 这意味着 64 个 Indexer query heads 共享同一个历史 key，而不是为每个 head 维护一份 K cache。
 
 Indexer 还从当前 hidden state 直接生成 query-dependent head weights：
 
-\[
+$$
 U^I
 =
 X(W^{IW})^{\mathsf T}
@@ -1281,122 +1281,122 @@ X(W^{IW})^{\mathsf T}
 [T_Q,7168]
 \rightarrow
 [T_Q,64].
-\]
+$$
 
-其中 \(u^I_{t,j}\) 是 query \(t\) 对第 \(j\) 个 Indexer head 的基础权重；
+其中 $u^I_{t,j}$ 是 query $t$ 对第 $j$ 个 Indexer head 的基础权重；
 这条分支不经过 softmax。把官方 reference 的两个固定 normalization 吸收后，
 定义
 
-\[
+$$
 w^I_{t,j}
 =
 u^I_{t,j}H_I^{-1/2}D_I^{-1/2}.
-\]
+$$
 
-需要注意，只有 Indexer Q 复用 \(C^Q\)；Indexer K 与这里的 weights 都直接
-由 \(X\) 生成。
+需要注意，只有 Indexer Q 复用 $C^Q$；Indexer K 与这里的 weights 都直接
+由 $X$ 生成。
 
 #### 第三步：RoPE、Hadamard 与 FP8
 
 每条 128-D Indexer Q/K 被拆成：
 
-\[
+$$
 128=64_{\mathrm{RoPE}}+64_{\mathrm{NoPE}}.
-\]
+$$
 
 前 64 维应用 non-interleaved RoPE，与主 MLA 使用的 interleaved RoPE 不同。这不是排版差异：若两边使用不同的 pair layout，对应位置的 dot product 就会改变。
 
-旋转后再应用归一化 Hadamard 变换 \(\mathcal H_{128}\)：
+旋转后再应用归一化 Hadamard 变换 $\mathcal H_{128}$：
 
-\[
+$$
 \bar q=\mathcal H_{128}q, \qquad \bar k=\mathcal H_{128}k,
-\]
+$$
 
-\[
+$$
 \mathcal H_{128}^{\mathsf T}\mathcal H_{128}=I.
-\]
+$$
 
 所以量化前有：
 
-\[
+$$
 \bar q^{\mathsf T}\bar k = q^{\mathsf T}k.
-\]
+$$
 
 Hadamard 不改变精确实数内积；它的作用是扩散 outlier，使后续 E4M3 量化更稳定。“内积不变”不能外推成“量化后逐 bit 不变”。
 
-> **关于两个 \(H\) 的记号。** \(H_I=64\) 是一个标量，表示 Indexer head
-> 数；\(\mathcal H_{128}\in\mathbb R^{128\times128}\) 才是 Hadamard 变换
-> 矩阵。它的元素为 \(\pm1/\sqrt{128}\)，是固定、正交且不参与学习的线性
-> 变换。实现无需在内存中物化这张 \(128\times128\) 矩阵，而是用 fast
-> Hadamard transform 通过分层加减在 \(O(128\log128)\) 时间内完成。Q/K 使用
-> 同一个 \(\mathcal H_{128}\)，所以精确算术下内积不变；它位于 partial RoPE
+> **关于两个 $H$ 的记号。** $H_I=64$ 是一个标量，表示 Indexer head
+> 数；$\mathcal H_{128}\in\mathbb R^{128\times128}$ 才是 Hadamard 变换
+> 矩阵。它的元素为 $\pm1/\sqrt{128}$，是固定、正交且不参与学习的线性
+> 变换。实现无需在内存中物化这张 $128\times128$ 矩阵，而是用 fast
+> Hadamard transform 通过分层加减在 $O(128\log128)$ 时间内完成。Q/K 使用
+> 同一个 $\mathcal H_{128}$，所以精确算术下内积不变；它位于 partial RoPE
 > 之后、FP8 量化之前，量化后的内积则只近似保持。
 
-令 \(q^{(8)},k^{(8)}\) 表示 E4M3 数据，\(s^Q_{t,j},s^K_s\) 表示相应
+令 $q^{(8)},k^{(8)}$ 表示 E4M3 数据，$s^Q_{t,j},s^K_s$ 表示相应
 scale。官方 reference 将 query scale 与两个 normalization 一起折入
 query-dependent weight：
 
-\[
+$$
 \widetilde w_{t,j}
 =
 w^I_{t,j}s^Q_{t,j}
 =
 u^I_{t,j}H_I^{-1/2}D_I^{-1/2}s^Q_{t,j}.
-\]
+$$
 
 于是 scorer 的实现语义可写成：
 
-\[
+$$
 I_{t,s} \approx s^K_s \sum_{j=0}^{63} \widetilde w_{t,j} \operatorname{ReLU} \left( \left\langle q^{(8)}_{t,j}, k^{(8)}_s \right\rangle \right).
-\]
+$$
 
-这里的 \(q^{(8)},k^{(8)}\) 明确指经过 partial RoPE、Hadamard 与 FP8 量化后的向量，不再和变换前的 \(q^I,k^I\) 混用。
+这里的 $q^{(8)},k^{(8)}$ 明确指经过 partial RoPE、Hadamard 与 FP8 量化后的向量，不再和变换前的 $q^I,k^I$ 混用。
 
 Indexer K cache 的逻辑 payload 是：
 
-\[
+$$
 128\ {\rm B\ of\ E4M3} + 4\ {\rm B\ scale} = 132\ {\rm B/token}.
-\]
+$$
 
 与完整主 KV row 相比，这是全历史扫描带宽能够显著下降的基础。
 
 #### 第四步：在片上融合 64 个 Heads，只写最终 Score
 
-按数学定义，固定 query \(t\) 时先有：
+按数学定义，固定 query $t$ 时先有：
 
-\[
+$$
 R^I_t = Q^I_t \left( K^I_{\mathrm{cache}} \right)^{\mathsf T} : [64,128][128,T_K] \rightarrow [64,T_K].
-\]
+$$
 
 全局 logical shape 是：
 
-\[
+$$
 R^I:[T_Q,64,T_K].
-\]
+$$
 
 再经过 ReLU、weight 和 head reduction：
 
-\[
+$$
 I_{t,s} = \sum_{j=0}^{63} w^I_{t,j} \operatorname{ReLU} \left( R^I_{t,j,s} \right),
-\]
+$$
 
-\[
+$$
 I:[T_Q,T_K]_{\mathrm{FP32}}.
-\]
+$$
 
-如果把 \([T_Q,64,T_K]\) 写入 HBM，低维 Indexer 会先制造一个比最终 score 大 64 倍的中间量。发布版 DeepGEMM scorer 因而把矩阵乘、ReLU、query-dependent weighting 与 64-head reduction 融合起来，只写最终的 FP32 \(I\)。
+如果把 $[T_Q,64,T_K]$ 写入 HBM，低维 Indexer 会先制造一个比最终 score 大 64 倍的中间量。发布版 DeepGEMM scorer 因而把矩阵乘、ReLU、query-dependent weighting 与 64-head reduction 融合起来，只写最终的 FP32 $I$。
 
 它的一种核心 tile 按代码中的 GEMM 方向可以概括为：
 
-\[
+$$
 Q_{\mathrm{tile}}:[2,64,128]
 \rightarrow
 Q_{\mathrm{flat}}:[128,128],
 \qquad
 K_{\mathrm{tile}}:[256,128],
-\]
+$$
 
-\[
+$$
 \underbrace{K_{\mathrm{tile}}}_{[256,128]}
 \underbrace{Q_{\mathrm{flat}}^{\mathsf T}}_{[128,128]}
 \rightarrow
@@ -1405,19 +1405,19 @@ Z:[256,128]
 [256,2,64]
 \rightarrow
 I_{\mathrm{tile}}:[2,256].
-\]
+$$
 
 最后一步对 64 个 Indexer heads 做 ReLU、query-dependent weighting 与
 reduction，再将 candidate-major accumulator fragments 直接映射到逻辑
-\([2,256]\) 的输出地址。这里没有单独的 transpose 阶段。中间的 64-head
-结果 \(Z\) 停留在片上；HBM 只看到每个 query 对 256 个 candidates 的最终
+$[2,256]$ 的输出地址。这里没有单独的 transpose 阶段。中间的 64-head
+结果 $Z$ 停留在片上；HBM 只看到每个 query 对 256 个 candidates 的最终
 score tile。
 
 但这个发布版 scorer **不包含 Top-K**。公开 DeepGEMM pipeline 仍然为
 
-\[
+$$
 I:[T_Q,T_K]_{\mathrm{FP32}}.
-\]
+$$
 
 分配并物化完整的矩形 carrier。主 scorer 写入每行的合法 candidate 区域；
 启用 `clean_logits` 时，invalid/future 区域由独立 cleanup kernel 填充。
@@ -1425,19 +1425,19 @@ I:[T_Q,T_K]_{\mathrm{FP32}}.
 
 因此 DeepGEMM 已经完成的是 **scorer 内部融合**：FP8 matrix multiply、ReLU、
 query-dependent weighting 与 64-head reduction 在同一 kernel 中完成，
-\([T_Q,64,T_K]\) 的 per-head scores 不写入 HBM。但这不是 Indexer–TopK
+$[T_Q,64,T_K]$ 的 per-head scores 不写入 HBM。但这不是 Indexer–TopK
 fusion。发布版公开 pipeline 仍然物化完整的
-\(I:[T_Q,T_K]_{\mathrm{FP32}}\)，后续 exact Top-K 仍由独立实现重新扫描。
+$I:[T_Q,T_K]_{\mathrm{FP32}}$，后续 exact Top-K 仍由独立实现重新扫描。
 
 #### 第五步：Top-K 将 Score 变成 Token 地址
 
-对 query 位置 \(t\)，令 \(p_t\) 表示最后一个 causal 可见位置。数学上：
+对 query 位置 $t$，令 $p_t$ 表示最后一个 causal 可见位置。数学上：
 
-\[
+$$
 \kappa_t = \min(\kappa,p_t+1),
-\]
+$$
 
-\[
+$$
 J_t
 =
 \operatorname{TopKIndex}
@@ -1447,23 +1447,23 @@ I_{t,0:p_t+1},
 \right)
 :
 [\kappa_t].
-\]
+$$
 
-\(J_{t,r}\) 是 token address，不是 routing score。同一个 query 的 128 个主 heads 共享 \(J_t\)，不同 query 的集合则可以完全不同。
+$J_{t,r}$ 是 token address，不是 routing score。同一个 query 的 128 个主 heads 共享 $J_t$，不同 query 的集合则可以完全不同。
 
 公开接口还需要两步 shape/dtype 适配。
 
 第一，官方 inference reference 的 `torch.topk` 返回 INT64 indices，并以一次调用的 `min(index_topk, end_pos)` 作为固定末维；causal mask 负责让未来位置保持无效。
 
 第二，在本文的 DSA 配置下，FlashMLA sparse-prefill 接收固定宽度为
-\(\kappa=2048\) 的：
+$\kappa=2048$ 的：
 
-\[
+$$
 J^{\mathrm{kernel}} : [T_Q,1,\kappa]_{\mathrm{INT32}}.
-\]
+$$
 
-若某行只有 \(\kappa_t<\kappa\) 个合法 tokens，其余 slots 必须改写为 invalid
-sentinel，例如 `-1` 或不小于 \(T_K\) 的地址。不能重复某个合法 token 来填满，
+若某行只有 $\kappa_t<\kappa$ 个合法 tokens，其余 slots 必须改写为 invalid
+sentinel，例如 `-1` 或不小于 $T_K$ 的地址。不能重复某个合法 token 来填满，
 否则 softmax 会把该 token 计算多次。
 
 从 reference 的 INT64 Top-K 到 kernel 的固定宽度 INT32 tensor，因而是一项真实的数据准备工作，不是可以在 shape 图里省略的类型标注。
@@ -1473,7 +1473,7 @@ Top-K IDs 是离散控制流，language-modeling loss 不能直接穿过“某�
 它不改变推理时 exact Top-K 的执行成本。
 
 至此，Indexer 阶段结束。它交给下一阶段的不是 Attention 概率，而是
-\(J^{\mathrm{kernel}}:[T_Q,1,2048]_{\mathrm{INT32}}\) token addresses。
+$J^{\mathrm{kernel}}:[T_Q,1,2048]_{\mathrm{INT32}}$ token addresses。
 
 ### 5.2 MLA Bridge：为什么主 Kernel 是 576-D MQA
 
@@ -1486,7 +1486,7 @@ latent value，而不是 128 份展开后的 MHA K/V。
 
 共享 query latent 经过主 MLA 的 query up-projection：
 
-\[
+$$
 Q^{\mathrm{raw}}
 =
 C^Q(W^{QB})^{\mathsf T}
@@ -1494,18 +1494,18 @@ C^Q(W^{QB})^{\mathsf T}
 [T_Q,1536][1536,128\cdot192]
 \rightarrow
 [T_Q,128,192].
-\]
+$$
 
 每个 head 拆成：
 
-\[
+$$
 q^C_{t,h}\in\mathbb R^{128}, \qquad q^R_{t,h}\in\mathbb R^{64}.
-\]
+$$
 
-\(q^R\) 使用主 MLA 的 interleaved RoPE。另一侧，hidden states 先投影出
+$q^R$ 使用主 MLA 的 interleaved RoPE。另一侧，hidden states 先投影出
 512-D KV latent 与 64-D RoPE key：
 
-\[
+$$
 [C^{KV}_{\mathrm{pre}};K^R_{\mathrm{pre}}]
 =
 X(W^{DKV})^{\mathsf T}
@@ -1513,40 +1513,40 @@ X(W^{DKV})^{\mathsf T}
 [T_K,7168][7168,576]
 \rightarrow
 [T_K,576].
-\]
+$$
 
-前 512 维经过 RMSNorm 得到 \(C^{KV}\)，后 64 维经过 RoPE 得到
-\(K^R\)。因此 KV cache 保存：
+前 512 维经过 RMSNorm 得到 $C^{KV}$，后 64 维经过 RoPE 得到
+$K^R$。因此 KV cache 保存：
 
-\[
+$$
 C^{KV}:[T_K,512], \qquad K^R:[T_K,64].
-\]
+$$
 
 若直接恢复成 MHA，每个 head 的 content key 与 value 分别为：
 
-\[
+$$
 k^C_{s,h} = W_h^{UK}c^{KV}_s \in\mathbb R^{128},
-\]
+$$
 
-\[
+$$
 v_{s,h} = W_h^{UV}c^{KV}_s \in\mathbb R^{128},
-\]
+$$
 
 其中：
 
-\[
+$$
 W_h^{UK}, W_h^{UV} \in \mathbb R^{128\times512}.
-\]
+$$
 
 这会得到：
 
-\[
+$$
 K^{\mathrm{MHA}}:[T_K,128,192],
-\]
+$$
 
-\[
+$$
 V^{\mathrm{MHA}}:[T_K,128,128].
-\]
+$$
 
 如果真的为 128 个 heads 展开这些 tensors，MLA 压缩 cache 的意义就会在 attention 前被抵消。
 
@@ -1554,48 +1554,48 @@ V^{\mathrm{MHA}}:[T_K,128,128].
 
 NoPE score 中的 content 项满足：
 
-\[
+$$
 (q^C_{t,h})^{\mathsf T} W_h^{UK} c^{KV}_s = \left( (W_h^{UK})^{\mathsf T}q^C_{t,h} \right)^{\mathsf T} c^{KV}_s.
-\]
+$$
 
 定义：
 
-\[
+$$
 q^A_{t,h} = (W_h^{UK})^{\mathsf T}q^C_{t,h} \in\mathbb R^{512}.
-\]
+$$
 
 再把 RoPE 部分拼回去：
 
-\[
+$$
 \widetilde q_{t,h} = [q^A_{t,h};q^R_{t,h}] \in\mathbb R^{576},
-\]
+$$
 
-\[
+$$
 \widetilde k_s = [c^{KV}_s;k^R_s] \in\mathbb R^{576}.
-\]
+$$
 
 于是主 QK 的执行 shape 变成：
 
-\[
+$$
 \widetilde Q : [T_Q,128,576],
-\]
+$$
 
-\[
+$$
 \widetilde K : [T_K,1,576].
-\]
+$$
 
 这里的 “1” 表示所有主 query heads 共享同一条 MQA key row。
 
 执行 dot product 的向量虽然是 576-D，softmax scale 仍继承原始 192-D MHA
 score。公开 reference 在长上下文配置下使用
 
-\[
+$$
 m_{\mathrm{YaRN}}
 =
 1+0.1\,m_{\mathrm{cfg}}\ln r_{\mathrm{RoPE}},
-\]
+$$
 
-\[
+$$
 \alpha
 =
 \frac{1}{\sqrt{192}}
@@ -1603,48 +1603,48 @@ m_{\mathrm{YaRN}}
 m_{\mathrm{YaRN}}^2,&L_{\max}>L_{\mathrm{original}},\\
 1,&\text{otherwise},
 \end{cases}
-\]
+$$
 
-其中 \(m_{\mathrm{cfg}}\) 与 \(r_{\mathrm{RoPE}}\) 分别是配置中的 YaRN 系数与
-RoPE 扩展因子。\(\alpha\) 不能机械地替换成 \(576^{-1/2}\)，因为 576-D
+其中 $m_{\mathrm{cfg}}$ 与 $r_{\mathrm{RoPE}}$ 分别是配置中的 YaRN 系数与
+RoPE 扩展因子。$\alpha$ 不能机械地替换成 $576^{-1/2}$，因为 576-D
 只是代数吸收后的执行表示，不是新的模型 score 定义。
 
 #### 将 Value Up-Projection 移到 Attention 之后
 
 原始 MHA 的 head output 为：
 
-\[
+$$
 \sum_s P_{t,h,s} W_h^{UV} c^{KV}_s.
-\]
+$$
 
 利用线性性：
 
-\[
+$$
 \sum_s P_{t,h,s} W_h^{UV} c^{KV}_s = W_h^{UV} \left( \sum_s P_{t,h,s} c^{KV}_s \right).
-\]
+$$
 
 因此 MQA core 直接使用：
 
-\[
+$$
 \widetilde V_s = c^{KV}_s \in\mathbb R^{512},
-\]
+$$
 
 先得到 latent output：
 
-\[
+$$
 O^C : [T_Q,128,512],
-\]
+$$
 
-再通过每个 head 的 \(W_h^{UV}\) 恢复：
+再通过每个 head 的 $W_h^{UV}$ 恢复：
 
-\[
+$$
 O^{\mathrm{MHA}} : [T_Q,128,128].
-\]
+$$
 
 最后将 heads 展平并应用
-\(W^O\in\mathbb R^{7168\times16384}\)：
+$W^O\in\mathbb R^{7168\times16384}$：
 
-\[
+$$
 Y
 =
 \operatorname{ConcatHeads}(O^{\mathrm{MHA}})(W^O)^{\mathsf T}
@@ -1652,10 +1652,10 @@ Y
 [T_Q,16384][16384,7168]
 \rightarrow
 [T_Q,7168].
-\]
+$$
 
-FlashMLA sparse core 只返回 \(O^C:[T_Q,128,512]\)；\(W^{UV}\) 恢复与
-\(W^O\) 都在该 kernel 之外。
+FlashMLA sparse core 只返回 $O^C:[T_Q,128,512]$；$W^{UV}$ 恢复与
+$W^O$ 都在该 kernel 之外。
 
 在精确算术下，MQA mode 不是新的近似，而是 MLA 的代数重排；实际 BF16/FP8
 量化与不同运算顺序不保证逐 bit 相同。论文 Appendix A 给出 MHA/MQA 的代数
@@ -1672,62 +1672,62 @@ reference prefill 已经调用该 kernel。
 ### 5.3 FlashMLA：把随机 Rows 收进 SMEM 边界
 
 > **Takeaway.** FlashMLA 不在 global memory 中物化
-> \(K^{\mathrm{slc}}:[T_Q,\kappa,576]\) 与
-> \(V^{\mathrm{slc}}:[T_Q,\kappa,512]\)；producer 直接按 IDs gather 64 条 rows
-> 到 SMEM，consumer 因而只看到规则的 \([64,576]\) QK tile 与
-> \([64,512]\) latent PV tile。
+> $K^{\mathrm{slc}}:[T_Q,\kappa,576]$ 与
+> $V^{\mathrm{slc}}:[T_Q,\kappa,512]$；producer 直接按 IDs gather 64 条 rows
+> 到 SMEM，consumer 因而只看到规则的 $[64,576]$ QK tile 与
+> $[64,512]$ latent PV tile。
 
-有了 \(J\)、\(\widetilde Q\) 和共享 KV，主 Attention 的数学程序很短：
+有了 $J$、$\widetilde Q$ 和共享 KV，主 Attention 的数学程序很短：
 
-\[
+$$
 K^{\mathrm{slc}}_{t,r,:} = \widetilde K[J_{t,r},:],
-\]
+$$
 
-\[
+$$
 V^{\mathrm{slc}}_{t,r,:} = C^{KV}[J_{t,r},:],
-\]
+$$
 
-\[
+$$
 S_{t,h,r} = \widetilde q_{t,h}^{\mathsf T} K^{\mathrm{slc}}_{t,r,:},
-\]
+$$
 
-\[
+$$
 P_{t,h,:} = \operatorname{softmax} \left( \mathrm{scale}\cdot S_{t,h,:} \right),
-\]
+$$
 
-\[
+$$
 O^C_{t,h,:} = \sum_r P_{t,h,r} V^{\mathrm{slc}}_{t,r,:}.
-\]
+$$
 
-对一次固定 selection width \(\kappa\) 的 kernel 调用，把所有 query positions 重新写成
+对一次固定 selection width $\kappa$ 的 kernel 调用，把所有 query positions 重新写成
 batched matrix program，完整 logical shapes 是：
 
-\[
+$$
 K^{\mathrm{slc}}:[T_Q,\kappa,576],\qquad
 V^{\mathrm{slc}}:[T_Q,\kappa,512],
-\]
+$$
 
-\[
+$$
 \underbrace{\widetilde Q}_{[T_Q,128,576]}
 \underbrace{(K^{\mathrm{slc}})^{\mathsf T}}_{[T_Q,576,\kappa]}
 \rightarrow
 S:[T_Q,128,\kappa]
 \xrightarrow{\mathrm{softmax}_{\kappa}}
 P:[T_Q,128,\kappa],
-\]
+$$
 
-\[
+$$
 \underbrace{P}_{[T_Q,128,\kappa]}
 \underbrace{V^{\mathrm{slc}}}_{[T_Q,\kappa,512]}
 \rightarrow
 O^C:[T_Q,128,512].
-\]
+$$
 
 这两次 batched matrix multiplication 分别沿 576-D QK feature 与 selected-token
-轴 \(\kappa\) 收缩。它们定义算法语义，但不要求两个 selected tensors 真正在 HBM
+轴 $\kappa$ 收缩。它们定义算法语义，但不要求两个 selected tensors 真正在 HBM
 中存在。
 
-问题不在公式，而在 \(K^{\mathrm{slc}}\) 应该在哪里存在。
+问题不在公式，而在 $K^{\mathrm{slc}}$ 应该在哪里存在。
 
 #### 阶段一：输入只有 Q、共享 KV 与 Token IDs
 
@@ -1766,50 +1766,50 @@ D_QK         = 576
 D_V          = 512
 ```
 
-Q、KV 和 indices 的最后一维必须连续；invalid index 可以是 `-1` 或任何不小于 \(T_K\) 的值。这些约束是当前 release kernel 的能力边界，不能泛化成任意 head、任意维度、任意 Top-K。
+Q、KV 和 indices 的最后一维必须连续；invalid index 可以是 `-1` 或任何不小于 $T_K$ 的值。这些约束是当前 release kernel 的能力边界，不能泛化成任意 head、任意维度、任意 Top-K。
 
 这里还有一个重要的调用约束：kernel 只检查 index 是否落在
-\([0,T_K)\)，并不知道每个 query 的绝对位置，也不会在内部重新施加 causal
-mask。因此所有有效的 \(J_{t,r}\) 都必须已经满足该 query 的因果可见性；这由
+$[0,T_K)$，并不知道每个 query 的绝对位置，也不会在内部重新施加 causal
+mask。因此所有有效的 $J_{t,r}$ 都必须已经满足该 query 的因果可见性；这由
 上游 Indexer、causal cleanup 与 Top-K pipeline 保证，而不是 FlashMLA 补救。
 
 #### 阶段二：不在 HBM 中构造 Selected-KV
 
 若先在单独 kernel 中收集：
 
-\[
+$$
 K^{\mathrm{slc}} : [T_Q,2048,576]_{\mathrm{BF16}},
-\]
+$$
 
 单个 query 就需要写出：
 
-\[
+$$
 2048\cdot576\cdot2 = 2.25\ {\rm MiB}.
-\]
+$$
 
 后续 Attention 还要再读一遍，仅这个中间 tensor 就增加约：
 
-\[
+$$
 4.5\ {\rm MiB/query}
-\]
+$$
 
 的 logical global-memory round trip。这个数不是必然发生的物理 HBM bytes：
 中间结果的重新读取可能由 L2 服务。它对应的还是最节省的 external-gather
 方案，因为
 
-\[
+$$
 \widetilde K=[C^{KV};K^R],\qquad \widetilde V=C^{KV},
-\]
+$$
 
-所以只需物化一条 576-D fused row，再让 \(V^{\mathrm{slc}}\) 使用其前 512
+所以只需物化一条 576-D fused row，再让 $V^{\mathrm{slc}}$ 使用其前 512
 维；若分别物化 K/V，额外流量只会更高。原始 KV-cache read 是 external 与
 fused 两种方案共有的成本，因而没有计入这里的“额外流量”。
 
 FlashMLA 不在 global memory 中创建该 tensor。它只把每轮需要的 64 条离散 row 搬入一个规则的：
 
-\[
+$$
 KV^{\mathrm{SMEM}}_{\mathrm{tile}} : [64,576]
-\]
+$$
 
 tile，然后让 Tensor Core consumer 把它当普通二维矩阵使用。
 
@@ -1817,48 +1817,48 @@ tile，然后让 Tensor Core consumer 把它当普通二维矩阵使用。
 
 SM90 sparse-prefill release 使用：
 
-\[
+$$
 B_H=64, \qquad B_{\mathrm{kv}}=64, \qquad N_{\mathrm{threads}}=384.
-\]
+$$
 
-其中 \(B_H\) 是一个 CTA 覆盖的 query-head tile 长度，
-\(B_{\mathrm{kv}}\) 是一次处理的 selected-token tile 长度。
+其中 $B_H$ 是一个 CTA 覆盖的 query-head tile 长度，
+$B_{\mathrm{kv}}$ 是一次处理的 selected-token tile 长度。
 
 launch grid 为：
 
-\[
+$$
 \mathrm{grid.x} = T_Q(H_q/64).
-\]
+$$
 
 一个 CTA 固定拥有：
 
-\[
+$$
 Q_t^{\mathrm{CTA}} : [B_H,576]=[64,576],
-\]
+$$
 
-\[
+$$
 J_t:[\kappa],
-\]
+$$
 
-\[
+$$
 O_t^{\mathrm{CTA}} : [B_H,512]=[64,512].
-\]
+$$
 
-128 个主 heads 因而使用两个 CTA，两者读取同一个 \(J_t\)。
+128 个主 heads 因而使用两个 CTA，两者读取同一个 $J_t$。
 
 384 threads 分成三个 128-thread warpgroups：
 
 | warpgroup | 角色 |
 |---|---|
-| WG0 | consumer：even 64-token chunk；持有输出 \(0{:}256\) |
-| WG1 | consumer：odd 64-token chunk；持有输出 \(256{:}512\) |
+| WG0 | consumer：even 64-token chunk；持有输出 $0{:}256$ |
+| WG1 | consumer：odd 64-token chunk；持有输出 $256{:}512$ |
 | WG2 | producer：读取 indices，将间接 KV rows 搬入 SMEM |
 
-当论文默认配置 \(\kappa=2048\) 时：
+当论文默认配置 $\kappa=2048$ 时：
 
-\[
+$$
 2048/64=32
-\]
+$$
 
 个 selected-token chunks 被组织成 16 轮 even/odd paired iterations。
 
@@ -1866,11 +1866,11 @@ O_t^{\mathrm{CTA}} : [B_H,512]=[64,512].
 
 随机的是 row base，不是 row 内的 576 个元素。一条 BF16 KV row 占：
 
-\[
+$$
 576\cdot2 = 1152\ {\rm B}.
-\]
+$$
 
-\(J_t[r]\) 决定下一条 row 的 base address，相邻 selected rows 可以落在完全不同的 cache line、page 或 HBM partition。但 base 确定后，该 row 的 576 个 BF16 元素在逻辑地址上连续。SM90 producer 实际将它拆成九个连续的 128 B feature slabs 协作搬运；这不是一条 1152 B bulk transaction，也不保证底层 DRAM transactions 全部合并。
+$J_t[r]$ 决定下一条 row 的 base address，相邻 selected rows 可以落在完全不同的 cache line、page 或 HBM partition。但 base 确定后，该 row 的 576 个 BF16 元素在逻辑地址上连续。SM90 producer 实际将它拆成九个连续的 128 B feature slabs 协作搬运；这不是一条 1152 B bulk transaction，也不保证底层 DRAM transactions 全部合并。
 
 所以 producer 面对的不是 576 次彼此无关的 scalar random load，而是：
 
@@ -1887,50 +1887,50 @@ O_t^{\mathrm{CTA}} : [B_H,512]=[64,512].
 
 WG0 与 WG1 都计算完整 QK feature：
 
-\[
+$$
 [64,576][576,64] \rightarrow [64,64].
-\]
+$$
 
 它们的 QK 区别在 token 轴：WG0 处理 even chunk，WG1 处理 odd chunk。
 
 PV ownership 则沿 value feature 轴拆开：
 
-\[
+$$
 V = V_L\oplus V_R,
-\]
+$$
 
-\[
+$$
 V_L,V_R : [64,256].
-\]
+$$
 
-| WG | 本地 probability | 常驻 FP32 accumulator | 对本地/远端 \(P\) 的贡献 |
+| WG | 本地 probability | 常驻 FP32 accumulator | 对本地/远端 $P$ 的贡献 |
 |---|---|---|---|
-| WG0 | \(P_0\) | \(O_L:[64,256]\) | \(P_0V_{0L}+P_1V_{1L}\) |
-| WG1 | \(P_1\) | \(O_R:[64,256]\) | \(P_1V_{1R}+P_0V_{0R}\) |
+| WG0 | $P_0$ | $O_L:[64,256]$ | $P_0V_{0L}+P_1V_{1L}$ |
+| WG1 | $P_1$ | $O_R:[64,256]$ | $P_1V_{1R}+P_0V_{0R}$ |
 
 两个 warpgroups 各向对方提供一块 probability tile：
 
-\[
+$$
 P_0,P_1:[64,64]_{\mathrm{BF16}},\qquad
 |P_0|=|P_1|=8\ {\rm KiB}.
-\]
+$$
 
 因此一个 even/odd pair 的双向 useful payload 是 16 KiB，而不是搬动各自约
 64 KiB 的 FP32 output accumulator。
 
-online softmax 仍维护 \(m,z,O_{\mathrm{acc}}\) 三类状态。新增的同步只在于：WG0
+online softmax 仍维护 $m,z,O_{\mathrm{acc}}$ 三类状态。新增的同步只在于：WG0
 先把历史状态与 even chunk 合并并发布更新后的 max，WG1 再把 odd chunk 纳入，
 得到这一 pair 的统一 max 基准；两边据此重标度 probability 与各自的 output
-half。两份 partial normalizer \(z_0,z_1\) 仍分别累积，直到 epilogue 才跨
+half。两份 partial normalizer $z_0,z_1$ 仍分别累积，直到 epilogue 才跨
 warpgroup 相加。因此 even/odd pipeline 改变的是 ownership，没有改变
 selected-token softmax 的数学定义。
 
 #### 阶段六：Pipeline 隐藏下一批 Gather 的延迟
 
-这里不是两块完整 \([64,576]\) tile 做简单
+这里不是两块完整 $[64,576]$ tile 做简单
 ping-pong。`plan.k[0]` 与 `plan.k[1]` 分别保存当前 pair 的 even 与 odd
-64-token chunk；每个 chunk 又沿 feature 轴拆成 \([0:256]\) 与
-\([256:576]\) 两段，并各自拥有 ready/free barrier。Producer 对一对 chunks
+64-token chunk；每个 chunk 又沿 feature 轴拆成 $[0:256]$ 与
+$[256:576]$ 两段，并各自拥有 ready/free barrier。Producer 对一对 chunks
 的搬运顺序是：
 
 ```text
@@ -1960,19 +1960,19 @@ latency；不减少必须读取的 KV bytes，也不改变 selected row addresse
 
 在一个 CTA 内，每条 576-D KV row 被 64 个 query heads 复用。只计该 row 参与的 QK 与 latent PV，局部算术量约为：
 
-\[
+$$
 2\cdot64\cdot(576+512) = 139264\ {\rm FLOPs}.
-\]
+$$
 
 除以 1152 B useful row payload：
 
-\[
+$$
 \frac{139264}{1152} \approx 121\ {\rm FLOP/B_{useful}}.
-\]
+$$
 
 这个数字解释了为什么 “任意 token selection” 不必然意味着 consumer 只能做低强度随机访存。算法让 64 个 heads 共享地址，kernel 再把同一 row 变成片上高复用 tile。
 
-但 \(121\ \mathrm{FLOP/B_{useful}}\) 只是以逻辑有效载荷为分母的 CTA-local
+但 $121\ \mathrm{FLOP/B_{useful}}$ 只是以逻辑有效载荷为分母的 CTA-local
 intensity，不是端到端 roofline，也不是实测的 L2 或 DRAM bytes。它没有计入：
 
 - Indexer 与 Top-K；
@@ -1998,11 +1998,11 @@ infra 机制造成该响应。
 我们在一张 NVIDIA H100 PCIe 上冻结未修改的官方 FlashMLA SM90
 sparse-prefill kernel（commit `3969f20`），使用：
 
-\[
+$$
 Q:[128,128,576]_{\mathrm{BF16}},\qquad
 KV:[16{,}777{,}216,1,576]_{\mathrm{BF16}},\qquad
 J:[128,1,2048]_{\mathrm{INT32}}.
-\]
+$$
 
 每个 query 拥有一块互不重叠的 128K-row KV arena，因此跨 query 的
 selected-row IDs 不会重叠。这排除了某个条件偶然获得更多跨 query 同-row
@@ -2017,8 +2017,8 @@ sparse-prefill tests、自建的 16 条件 correctness gate 和 formal validatio
 ![FlashMLA sparse-prefill 的 KV-row 顺序与聚集范围](/images/sparse-attention-kv-row-locality.png)
 
 *图 1：纵轴使用 focused scale。左图固定完全相同的 selected-row set，只改变
-ascending、descending 与八种 shuffle-seed 顺序；右图改变采样窗口 \(W\)，
-不同 \(W\) 会重新采样 window origin 与 exact selected IDs，因此折线只作视觉
+ascending、descending 与八种 shuffle-seed 顺序；右图改变采样窗口 $W$，
+不同 $W$ 会重新采样 window origin 与 exact selected IDs，因此折线只作视觉
 引导，不表示同一 selected set 的连续轨迹。误差棒均为 paired campaign-block
 bootstrap（5,000 resamples）得到的 pointwise 95% CI，不是所有可能
 permutations 或多重比较校正后的总体区间。*
@@ -2026,12 +2026,12 @@ permutations 或多重比较校正后的总体区间。*
 **先只改变访问顺序。** 顺序实验对每个 query 和每个 ring slot 固定完全相同的
 2048-row selected set，只将它排列成地址升序、地址降序和八种独立随机顺序。
 
-Ascending 的中位 latency 为 \(291.680\,\mu s\)；descending 为
-\(290.304\,\mu s\)，归一化 ratio 为 \(0.9953\)，paired 95% CI 为
-\([0.9906,1.0046]\)。点估计相差 \(0.47\%\)，但区间包含 1。
+Ascending 的中位 latency 为 $291.680\,\mu s$；descending 为
+$290.304\,\mu s$，归一化 ratio 为 $0.9953$，paired 95% CI 为
+$[0.9906,1.0046]$。点估计相差 $0.47\%$，但区间包含 1。
 
-八个 shuffle seed 的 ratio 落在 \(0.9953\)–\(0.9990\)，seed-level median
-为 \(0.9976\)，IQR 为 \(0.0030\)。对于这八个预先冻结的排列，每个 shuffle
+八个 shuffle seed 的 ratio 落在 $0.9953$–$0.9990$，seed-level median
+为 $0.9976$，IQR 为 $0.0030$。对于这八个预先冻结的排列，每个 shuffle
 相对 ascending 的 pointwise timing CI 都跨过 1。因此在这个固定 kernel
 point 上，我们没有检测到随机排列相对于地址升序的 latency 惩罚。这些区间
 量化的是每个 fixed-permutation condition 的 timing uncertainty，不是所有
@@ -2041,39 +2041,39 @@ point 上，我们没有检测到随机排列相对于地址升序的 latency �
 这个 null result 不是因为两组 indices 实际上仍然很接近。地址有序时，相邻 row
 距离的中位数为 44，每个 64-index tile 触及的 64-row regions 中位数为 41；
 在 `W=128K, shuffle-00` 下，这两个数字分别变成 38,435 和 63，同一
-64-row region 内的相邻访问比例也从 \(36.49\%\) 降至 \(0.046\%\)。软件可见
+64-row region 内的相邻访问比例也从 $36.49\%$ 降至 $0.046\%$。软件可见
 的 locality 已经发生数量级变化，而 latency 仍几乎不动。
 
-**再改变 selected-set 的聚集范围。** 聚集范围实验固定 \(\kappa=2048\)、
+**再改变 selected-set 的聚集范围。** 聚集范围实验固定 $\kappa=2048$、
 uniform-without-replacement 采样规则和 `shuffle-00` 的 rank-permutation
 rule，将 selected rows 分别从宽度为
 
-\[
+$$
 W\in\{2K,4K,8K,16K,32K,64K,128K\}
-\]
+$$
 
 的 64-row-aligned window 中采样。这里改变的是 selection distribution 的聚集
-程度：不同 \(W\) 的 window origin 与 exact selected row IDs 并不相同，因此
+程度：不同 $W$ 的 window origin 与 exact selected row IDs 并不相同，因此
 它不是“同一组 tokens 只改变 span”的 paired ablation。只有
 `W=128K, shuffle-00` 与顺序实验共享完全相同的 indices corpus，并作为
 聚集范围实验的 baseline。
 
-128K baseline 的中位 latency 是 \(291.360\,\mu s\)。相对它，2K 和 4K
-窗口的 latency 分别低 \(0.906\%\) 和 \(0.818\%\)，即绝对差约
-\(2.64\,\mu s\) 与 \(2.38\,\mu s\)；对应 pointwise 95% CI 为
+128K baseline 的中位 latency 是 $291.360\,\mu s$。相对它，2K 和 4K
+窗口的 latency 分别低 $0.906\%$ 和 $0.818\%$，即绝对差约
+$2.64\,\mu s$ 与 $2.38\,\mu s$；对应 pointwise 95% CI 为
 
-\[
+$$
 [0.9852,0.9973],\qquad [0.9869,0.9992].
-\]
+$$
 
 在预先报告的 pointwise 95% intervals 下，只有 2K 与 4K 的区间低于 1；
 其余窗口均包含 1。这里同时进行了六个 W-vs-128K 比较，却没有作 family-wise
-multiple-testing correction，尤其 4K 的上界 \(0.9992\) 已非常接近统计边界。
+multiple-testing correction，尤其 4K 的上界 $0.9992$ 已非常接近统计边界。
 一个未预注册的 Bonferroni bootstrap sensitivity check 中，2K 的区间上界约
-为 \(0.9993\)，4K 则约为 \(1.0018\)。因此本文把 2K 视为较清晰的
+为 $0.9993$，4K 则约为 $1.0018$。因此本文把 2K 视为较清晰的
 tight-window 小收益信号，把 4K 降为更弱的 exploratory signal。
 
-与此同时，每个 tile 触及的 region 数随 \(W\) 从
+与此同时，每个 tile 触及的 region 数随 $W$ 从
 28、41、51、57、60、62 增至 63，latency point estimates 却不单调：64K
 快于 8K–32K，32K 又略慢于 128K。这些跨窗口关系本身不是额外的 direct
 pairwise tests。实验没有建立 locality–latency 单调律、可信阈值或普遍的
@@ -2081,24 +2081,24 @@ pairwise tests。实验没有建立 locality–latency 单调律、可信阈值�
 
 **启动阶段的敏感性。** 原始计时中还存在一个与每轮实验起点严格对齐的
 短暂慢启动：10/10 轮实验的第一次计时都达到所属条件中位数的
-\(1.57\)–\(1.64\times\)，总计 12/3,200 个观测超过各自条件中位数的
-\(1.2\times\)。正式结果遵守预先冻结的纳入规则，没有在看到结果后删除这些
+$1.57$–$1.64\times$，总计 12/3,200 个观测超过各自条件中位数的
+$1.2\times$。正式结果遵守预先冻结的纳入规则，没有在看到结果后删除这些
 观测；中位数估计与配对随机化降低了少数长尾点的影响。
 
 作为补充的事后敏感性检查，删除每轮实验的
-`matched_round=0` 后，2K/4K ratios 从 \(0.9909/0.9918\) 变为
-\(0.9939/0.9943\)，对应收益从约 \(0.91\%/0.82\%\) 缩小到
-\(0.61\%/0.57\%\)；重新计算的 pointwise 95% intervals 仍低于 1。方向没有
+`matched_round=0` 后，2K/4K ratios 从 $0.9909/0.9918$ 变为
+$0.9939/0.9943$，对应收益从约 $0.91\%/0.82\%$ 缩小到
+$0.61\%/0.57\%$；重新计算的 pointwise 95% intervals 仍低于 1。方向没有
 翻转，但精确效应量对实验所处阶段有一定敏感性，因此这里只把它解释为
 亚百分比的小信号，而不是稳定的硬件常数。
 
 Profiler 只用于解释这个 clean-timing 结果。相对于
-`W=128K, shuffle-00`，单次 \(W=2K\) capture 的 NCU DRAM read 少
-\(2.17\%\)，device-read sectors 少 \(1.64\%\)，NCU/Nsys duration 分别短约
-\(0.96\%\) 和 \(1.31\%\)。但 L2 hit rate、long-scoreboard stall 与
-Tensor-pipe activity 都没有随 \(W\) 形成一致的单调链条。四个代表点的
+`W=128K, shuffle-00`，单次 $W=2K$ capture 的 NCU DRAM read 少
+$2.17\%$，device-read sectors 少 $1.64\%$，NCU/Nsys duration 分别短约
+$0.96\%$ 和 $1.31\%$。但 L2 hit rate、long-scoreboard stall 与
+Tensor-pipe activity 都没有随 $W$ 形成一致的单调链条。四个代表点的
 GMMA 指令数完全相同，achieved occupancy 也都在
-\(18.37\%\)–\(18.38\%\)。这确认了 dominant Tensor Core work 与静态执行
+$18.37\%$–$18.38\%$。这确认了 dominant Tensor Core work 与静态执行
 形状受到控制，但不表示地址生成、cache transaction 或 stall behavior 相同。
 每个条件只有一个 NCU/Nsys kernel instance，而且 NCU 使用 replay、不清 cache、
 不锁频；这些 counters 只能作为补充诊断，不能给出带方差的因果解释。
@@ -2107,7 +2107,7 @@ GMMA 指令数完全相同，achieved occupancy 也都在
 
 > **在冻结的 H100/SM90 sparse-prefill operating point 上，对于八个预先测试的
 > 随机排列，我们没有检测到相对地址升序的 latency penalty，所有 point
-> estimates 与 ascending 相差不超过 \(0.47\%\)。W-sweep 的 latency 不随
+> estimates 与 ascending 相差不超过 $0.47\%$。W-sweep 的 latency 不随
 > locality 单调变化；2K 给出较清晰的亚百分比小收益信号，4K 则是更接近统计
 > 边界的 pointwise signal。**
 
@@ -2120,12 +2120,12 @@ feature-segment pipeline 再尝试用 QK、softmax 与 PV 覆盖下一批 row �
 
 实验边界同样重要：indices 是 uniform-without-replacement 的 synthetic
 stimulus，private arenas 还刻意消除了真实 workload 可能具有的热门 token 和
-跨 query reuse。结果只覆盖 \(T_Q=128\)、\(\kappa=2048\)、BF16 576-D rows、
-\(D_V=512\) 和一张 H100 PCIe；它不是完整 DeepSeek-V3.2、production DSA、
+跨 query reuse。结果只覆盖 $T_Q=128$、$\kappa=2048$、BF16 576-D rows、
+$D_V=512$ 和一张 H100 PCIe；它不是完整 DeepSeek-V3.2、production DSA、
 真实 Indexer trace，也不是 sparse decode 测量。顺序实验的统计结论限于八个
-冻结的 permutation seeds；聚集范围实验比较的则是不同 \(W\) 下重新采样的
+冻结的 permutation seeds；聚集范围实验比较的则是不同 $W$ 下重新采样的
 synthetic corpora。实验还使用
-\(1/\sqrt{576}\) 作为冻结的 synthetic kernel stimulus，而不是模型的
+$1/\sqrt{576}$ 作为冻结的 synthetic kernel stimulus，而不是模型的
 192-D-plus-YaRN score scale。
 
 因此这个受控实验只能证明 FlashMLA 在当前 operating point 上对 row locality
@@ -2146,7 +2146,7 @@ results/summaries/e3-h100-20260805-formal2.formal-validation.json.
 experiment 都对应 BF16、非分页的 SM90 sparse-prefill。作为补充测量的 H100
 single-query decode 路径使用的是另一条公开实现：paged FP8 sparse-decode。
 
-在固定\(B=1\) 实验形状下，它使用：
+在固定$B=1$ 实验形状下，它使用：
 
 ```text
 q                : [1, 1, 128, 576] BF16
@@ -2158,12 +2158,12 @@ latent D_V       : 512
 
 其中每个 token 的 656-byte cache row 由
 
-\[
+$$
 512\ \mathrm{B\ FP8\ NoPE}
 +16\ \mathrm{B\ FP32\ scales}
 +128\ \mathrm{B\ BF16\ RoPE}
 =656\ \mathrm{B}
-\]
+$$
 
 组成，并非 656 bytes 全部使用 FP8。`physical indices` 也不是 Indexer 输出的
 逻辑 token IDs，而是经 page table 改写后的 paged-cache token offsets。该路径
@@ -2173,22 +2173,22 @@ latent D_V       : 512
 
 **Blackwell 将 gather 进一步下沉给 TMA。** 下述结构对应所核对的 FlashMLA commit
 [`9241ae3`](https://github.com/deepseek-ai/FlashMLA/tree/9241ae3ef9bac614dd25e45e507e089f888280e0)
-；在这个版本中，\(H_q=128,\kappa=2048,D_{QK}=576\) 的 public dispatch 精确落到
+；在这个版本中，$H_q=128,\kappa=2048,D_{QK}=576$ 的 public dispatch 精确落到
 SM100 regular `head128_k576`，而不是 `head64`：`head64` prefill 要求完整
-\(H_q=64\)，small-topk head128 又只支持 \(D_{QK}=512\)。
+$H_q=64$，small-topk head128 又只支持 $D_{QK}=512$。
 
 这与前文形成一条直接的架构演进。Hopper/SM90 将一个 128-head query 映射成
 两个拥有独立 SMEM 的 64-head CTAs；Blackwell/SM100 则使用
 
-\[
+$$
 B_H=128,\qquad B_{\mathrm{kv}}=128,
-\]
+$$
 
 并以
 
-\[
+$$
 \mathrm{grid.x}=2T_Q,\qquad \mathrm{clusterDim.x}=2
-\]
+$$
 
 为每个 query 组织一个 two-CTA cluster。每个 CTA 仍处理 64 个 query heads，
 但 K producer 改用 `TMA tile::gather4` 的 `cta_group::2` 形式。
@@ -2196,18 +2196,18 @@ B_H=128,\qquad B_{\mathrm{kv}}=128,
 一条 `gather4` 指令描述四条任意 row 的 64-D BF16 feature slab，因此 useful
 payload 为
 
-\[
+$$
 4\times64\times2=512\ {\rm B}.
-\]
+$$
 
 在每个 128-token chunk 中，两个 CTA 各负责 64 条 selected K rows。于是每个
-CTA 的一个 \([64,64]\) K slab 需要 \(64/4=16\) 次 `gather4`；完整
+CTA 的一个 $[64,64]$ K slab 需要 $64/4=16$ 次 `gather4`；完整
 576-D K 路径共有九个 64-D slabs，最后一个正是 RoPE 部分。与 standalone
 `head64_k576` 不同，这条实际 head128 路径不会把 RoPE tail 改走专用
 `cp.async`。
 
 V 使用另一组 producer warps：两个 CTA 都覆盖 128 条 selected rows，但分别
-gather 256 个 value dimensions，合起来形成 \([128,512]\) latent V tile。
+gather 256 个 value dimensions，合起来形成 $[128,512]$ latent V tile。
 因此 cluster 在 token 轴协作准备 K、在 value-feature 轴拆分 V，正好对应后续
 two-CTA QK/PV ownership。
 
@@ -2219,102 +2219,102 @@ DRAM transactions。这不是本文 H100/SM90 实验所能验证的路径。
 
 ### 5.6 隐藏的二次项：稀疏主核不等于线性系统
 
-> **Takeaway.** FlashMLA 将昂贵的主 Attention 限制在固定 Top-\(\kappa\)，但
+> **Takeaway.** FlashMLA 将昂贵的主 Attention 限制在固定 Top-$\kappa$，但
 > Lightning Indexer 仍为每个 query 计算全部历史 candidates，随后执行 exact
-> Top-\(\kappa\)；因此 sparse core 是 \(\Theta(N\kappa)\)，完整 causal prefill
-> 仍保留低常数的 \(\Theta(N^2)\) Discovery term。
+> Top-$\kappa$；因此 sparse core 是 $\Theta(N\kappa)$，完整 causal prefill
+> 仍保留低常数的 $\Theta(N^2)$ Discovery term。
 
 FlashMLA 只访问 selected 2048 tokens，但 DSA 必须先发现它们。只要 routing score 仍依赖每个 query–candidate pair，Indexer 就保留了一次全历史扫描。
 
 本节先做理论计数，再看 H100 实测。两者回答不同问题：理论说明二次项为什么
 存在；实验说明在冻结的公开实现链中，它何时开始主导 latency。
 
-下面的 \(\mathcal W\) 只计 dominant dot/QK/PV，并省略所有式子共同的 FMA
+下面的 $\mathcal W$ 只计 dominant dot/QK/PV，并省略所有式子共同的 FMA
 factor 2。它是 shape-derived useful-MAC count，不是不同 dtype 与 kernel 的
 等价时间单位。
 
 #### 理论一：单个新 Token 的成本
 
-面对长度 \(L\) 的历史，Indexer 成本为：
-\[
+面对长度 $L$ 的历史，Indexer 成本为：
+$$
 \mathcal W_{\mathrm{Indexer}}(L) = H_I D_I L = 64\cdot128\cdot L = 8192L.
-\]
+$$
 
 selected main MQA core 为：
 
-\[
+$$
 \mathcal W_{\mathrm{sparse}}(L) = H(D_{QK}^{\mathrm{MQA}}+D_C) \min(L,\kappa),
-\]
+$$
 
-\[
+$$
 \mathcal W_{\mathrm{sparse}}(L) = 128(576+512) \min(L,2048),
-\]
+$$
 
-\[
+$$
 \mathcal W_{\mathrm{sparse}}(L) = 139264 \min(L,2048).
-\]
+$$
 
 所以：
 
-\[
+$$
 \mathcal W_{\mathrm{DSA}}(L) = 8192L + 139264\min(L,2048).
-\]
+$$
 
-第一项随历史持续增长；第二项在 \(L\ge2048\) 后饱和。
+第一项随历史持续增长；第二项在 $L\ge2048$ 后饱和。
 
 #### 理论二：完整 Causal Prefill 的累计成本
 
-现在用 \(N\) 表示完整 causal sequence 的长度，对
-query positions \(t=1,\ldots,N\) 求和：
-\[
+现在用 $N$ 表示完整 causal sequence 的长度，对
+query positions $t=1,\ldots,N$ 求和：
+$$
 \mathcal W_{\mathrm{Indexer,full}}(N)
 = \sum_{t=1}^{N}8192t
 = 8192 \frac{N(N+1)}{2}
 = \Theta(N^2).
-\]
+$$
 
 sparse core 的精确求和是：
 
-\[
+$$
 \mathcal W_{\mathrm{sparse,full}}(N)
 = 139264 \sum_{t=1}^{N} \min(t,\kappa).
-\]
+$$
 
-当 \(N\ge\kappa\)：
+当 $N\ge\kappa$：
 
-\[
+$$
 \sum_{t=1}^{N} \min(t,\kappa)
 = \frac{\kappa(\kappa+1)}{2} + (N-\kappa)\kappa.
-\]
+$$
 
 因此：
 
-\[
+$$
 \mathcal W_{\mathrm{sparse,full}}(N)
 = \Theta(N\kappa) \qquad (N\ge\kappa).
-\]
+$$
 
-固定\(\kappa=2048\) 时：
+固定$\kappa=2048$ 时：
 
-\[
+$$
 \boxed{
 \mathcal W_{\mathrm{DSA,full}}(N)
 = \Theta(N^2)+\Theta(N\kappa)
 = \Theta(N^2)
 }.
-\]
+$$
 
 DSA 没有把 quadratic attention 变成 asymptotically linear attention。它把：
 
-\[
+$$
 \text{高维、128-head 的 quadratic 主 Attention}
-\]
+$$
 
 替换为：
 
-\[
+$$
 \text{低维 FP8 quadratic routing} + \text{高维但固定 Top-K 的主 Attention}.
-\]
+$$
 
 这是很有价值的常数重构，不是渐近阶数改变。
 
@@ -2322,27 +2322,27 @@ DSA 没有把 quadratic attention 变成 asymptotically linear attention。它�
 
 用原始 192-D MHA score 和 128-D MHA value 作 prefill-style baseline：
 
-\[
+$$
 \mathcal W_{\mathrm{dense,MHA}}(L) = H(192+128)L = 40960L.
-\]
+$$
 
 Indexer 的二次项系数是其：
 
-\[
+$$
 \frac{8192}{40960} = \frac15.
-\]
+$$
 
 若比较 single-query dense MQA decode，完整扫描 576-D key 与 512-D latent value：
 
-\[
+$$
 \mathcal W_{\mathrm{dense,MQA}}(L) = H(576+512)L = 139264L.
-\]
+$$
 
 Indexer 的线性扫描系数比它小：
 
-\[
+$$
 \frac{139264}{8192} = 17.
-\]
+$$
 
 这些比例还隐含一个带宽变化：全历史扫描中占主导的 per-candidate KV payload
 只需读取共享的 128-D FP8 Indexer key 与 scale；Indexer query、head weights 与
@@ -2350,14 +2350,14 @@ score carrier 写入仍然存在。完整 576-D 主 KV 则只为 selected tokens
 
 #### 可跳读：算术量的解析交叉点
 
-只比较 DSA 内部的 Indexer 与 sparse main。单个新 token 面对长度 \(L\) 的
+只比较 DSA 内部的 Indexer 与 sparse main。单个新 token 面对长度 $L$ 的
 历史时是 endpoint；完整 causal prefill 则对所有 query positions 累加。
-在 \(\kappa=2048\) 下：
+在 $\kappa=2048$ 下：
 
 | 口径 | useful-MAC 交叉关系 | tokens |
 |---|---|---:|
 | endpoint | Indexer = sparse main | 34,816 |
-| full causal | cumulative Indexer = cumulative sparse main | \(\approx68{,}592\) |
+| full causal | cumulative Indexer = cumulative sparse main | $\approx68{,}592$ |
 
 这些只是由 shape 推出的算术交叉点，不是 latency 预测。它们没有包含：
 
@@ -2369,72 +2369,72 @@ score carrier 写入仍然存在。完整 576-D 主 KV 则只为 selected tokens
 - 通信、launch、cache 和服务固定开销。
 
 后面的实验还包含 scorer、Top-K 与 index transform，因此 34,816 和约 68,592
-只能提供量级参考，不能预测实测的 \([32K,64K]\) bracket。
+只能提供量级参考，不能预测实测的 $[32K,64K]$ bracket。
 
 #### 公开实现还要物化 FP32 Score Carrier
 
 如果把 full prefill 一次性写成
 
-\[
+$$
 I:[L,L]_{\mathrm{FP32}},
-\]
+$$
 
-那么在 \(L=128\mathrm{Ki}\) 时，仅最终 routing logits 的逻辑 payload 就是
+那么在 $L=128\mathrm{Ki}$ 时，仅最终 routing logits 的逻辑 payload 就是
 
-\[
+$$
 (131072)^2\cdot4 = 64\ {\rm GiB}.
-\]
+$$
 
 这是 one-shot materialization 的 shape-derived logical payload，不是后面
 Discovery scaling experiment 的实际峰值，也不是该路径的完整显存需求。
-公开 prefill scorer 支持 query chunk。令 chunk size 为 \(C=4096\)，最终处理
-长度 \(N=mC\)，第 \(j\) 个 chunk 的右端点为 \(e_j=jC\)。忽略
+公开 prefill scorer 支持 query chunk。令 chunk size 为 $C=4096$，最终处理
+长度 $N=mC$，第 $j$ 个 chunk 的右端点为 $e_j=jC$。忽略
 `BLOCK_Q=2`、`BLOCK_KV=256` 带来的有界 tile rounding，真正有 causal
 语义的 scorer pairs 为
 
-\[
+$$
 P_{\mathrm{causal}}(N)
 =\sum_{t=1}^{N}t
 =\frac{N(N+1)}2.
-\]
+$$
 
 但交给独立 Top-K 的是每个 chunk 的矩形 carrier：
 
-\[
+$$
 E_{\mathrm{carrier}}(N)
 =
 \sum_{j=1}^{m}C(jC)
 =
 \frac{N(N+C)}2.
-\]
+$$
 
-二者之差是每个 chunk 内必须清理为 \(-\infty\) 的 future triangles：
+二者之差是每个 chunk 内必须清理为 $-\infty$ 的 future triangles：
 
-\[
+$$
 E_{\mathrm{future}}(N)
 =E_{\mathrm{carrier}}(N)-P_{\mathrm{causal}}(N)
 =\frac{N(C-1)}2.
-\]
+$$
 
-这里的 \(E_{\mathrm{future}}\) 只计算真正写成 \(-\infty\) 的 future elements，
+这里的 $E_{\mathrm{future}}$ 只计算真正写成 $-\infty$ 的 future elements，
 不能直接代表整个 cleanup kernel 的 issued work。公开 cleanup kernel 仍按
-\(B_{\mathrm{clean}}=8192\) 遍历每一行的完整 carrier。记所有 query rows
-累计访问的 cleanup blocks 数为 \(\mathcal B_{\mathrm{cleanup}}(N)\)，则
+$B_{\mathrm{clean}}=8192$ 遍历每一行的完整 carrier。记所有 query rows
+累计访问的 cleanup blocks 数为 $\mathcal B_{\mathrm{cleanup}}(N)$，则
 
-\[
+$$
 \mathcal B_{\mathrm{cleanup}}(N)
 =\sum_{j=1}^{m}C
 \left\lceil\frac{jC}{B_{\mathrm{clean}}}\right\rceil
 =\Theta\!\left(\frac{N^2}{B_{\mathrm{clean}}}\right).
-\]
+$$
 
-因此固定 \(C\) 时，无效值写入量是
-\(\Theta(NC)=\Theta(N)\)，但 cleanup kernel 的 traversal 并不是线性的。
+因此固定 $C$ 时，无效值写入量是
+$\Theta(NC)=\Theta(N)$，但 cleanup kernel 的 traversal 并不是线性的。
 公开 API 将 scorer 与 cleanup 合并计时，后面的实验也保持这一边界。
 
 因此：
 
-\[
+$$
 \begin{aligned}
 \text{causal scorer useful pairs/MACs} &:\Theta(N^2),\\
 \text{Top-K carrier scan} &:\Theta(N^2),\\
@@ -2442,13 +2442,13 @@ E_{\mathrm{future}}(N)
 \text{cleanup block traversal} &:\Theta(N^2/B_{\mathrm{clean}}),\\
 \text{fixed-}\kappa\text{ FlashMLA} &:\Theta(N\kappa)=\Theta(N).
 \end{aligned}
-\]
+$$
 
 在 2M 的最后一个 chunk 中，公开链真正物化的 logical view 是
 
-\[
+$$
 I_j:[4096,2097152]_{\mathrm{FP32}}=32\ {\rm GiB},
-\]
+$$
 
 其 DeepGEMM backing 因 256-token stride padding 再多 4 MiB。从 4K replay
 到 2M，所有矩形 carriers 的累计 logical write volume 约为 8.016 TiB，但它们
@@ -2459,20 +2459,20 @@ Chunking 把单次 live carrier 从 square tensor 降到矩形 tile，却没有�
 #### Exact Top-K 为什么仍要扫描全部 Candidates
 
 若 query-dependent routing score 没有额外结构，也没有 candidate-specific
-bound 能安全排除未检查候选，那么 exact global Top-\(\kappa\) 在最坏情况下
-必须检查全部 \(L\) 个 candidates。
+bound 能安全排除未检查候选，那么 exact global Top-$\kappa$ 在最坏情况下
+必须检查全部 $L$ 个 candidates。
 
-否则，对任何被跳过的候选 \(s\)，都可以构造一个保持已检查 scores 不变、但令 \(I_{t,s}\) 大于当前第 \(\kappa\) 大值的输入。selector 因而无法证明结果 exact。
+否则，对任何被跳过的候选 $s$，都可以构造一个保持已检查 scores 不变、但令 $I_{t,s}$ 大于当前第 $\kappa$ 大值的输入。selector 因而无法证明结果 exact。
 
 在这些明确前提下：
 
-\[
+$$
 \text{single query} : \Omega(L) \ \text{score evaluations},
-\]
+$$
 
-\[
+$$
 \text{full causal prefill} : \Omega(L^2) \ \text{score evaluations}.
-\]
+$$
 
 Chunking、streaming Top-K 和 kernel fusion 可以减少 peak memory、HBM 往返与
 launch，但不会自动减少必须判断的 candidate 数量。要改变渐近项，需要允许
@@ -2485,11 +2485,11 @@ approximate retrieval、引入具有可证明安全排除保证的层次化候�
 operation count 只描述算法结构；GPU latency 还取决于 dtype、kernel efficiency、
 中间张量以及内存流量。下面的实验因而只问一个更窄、也可直接测量的问题：
 
-> 在冻结的公开实现链中，随着完整 causal prefill 长度 \(N\) 增长，Discovery
-> 何时超过 fixed-\(\kappa\) 的 FlashMLA sparse main attention？
+> 在冻结的公开实现链中，随着完整 causal prefill 长度 $N$ 增长，Discovery
+> 何时超过 fixed-$\kappa$ 的 FlashMLA sparse main attention？
 
 先给结果：32K 时 Discovery 仍小于 FlashMLA；64K 时已经超过它；到 2M 时，
-二者之比达到 \(33.60\times\)。从 256K 到 2M，Discovery 与 sparse main 的
+二者之比达到 $33.60\times$。从 256K 到 2M，Discovery 与 sparse main 的
 端点有效指数分别为 2.027 与 1.031，与“前者近二次、后者近线性”的预测一致。
 这些数字只属于下面这条冻结的公开组件链，不是 production DSA 的固定拐点。
 
@@ -2507,20 +2507,20 @@ DeepGEMM FP8 scorer
 
 记
 
-\[
+$$
 T_{\mathrm{Discovery}}
 =T_{\mathrm{scorer+cleanup}}
 +T_{\mathrm{TopK}}
 +T_{\mathrm{pad/cast}},
 \qquad
 T_{\mathrm{SparseMain}}=T_{\mathrm{FlashMLA}}.
-\]
+$$
 
 对同一个 query chunk，FlashMLA 必须等 Top-K IDs 生成后才能启动，因此这里的
 Discovery 不是可以和该 chunk 的 main attention 任意重叠掉的旁路成本。
 
 实验在单张 H100 PCIe（SM90）上固定
-\(B=1,C=4096,\kappa=2048\)。2 次 warmup replay 后，Direct full-chain total
+$B=1,C=4096,\kappa=2048$。2 次 warmup replay 后，Direct full-chain total
 使用 20 次**重复** clean replay 的 start-to-checkpoint CUDA event；阶段归因
 来自另外 5 次 instrumented replay，并在每个 trial 内累加所有 chunk events。
 二者是不同的测量轨迹，下面不会用阶段中位数相加冒充 direct total。
@@ -2533,15 +2533,15 @@ selection 也不来自真实模型 trace。因此它控制了 shape 和执行路
 
 Extended campaign 的 CUDA-event 中位数为：
 
-| 已处理长度 \(N\) | Discovery cumulative | FlashMLA sparse prefill | Direct full-chain total | Discovery / FlashMLA |
+| 已处理长度 $N$ | Discovery cumulative | FlashMLA sparse prefill | Direct full-chain total | Discovery / FlashMLA |
 |---:|---:|---:|---:|---:|
-| 32K | 0.0307 s | 0.0422 s | 0.0728 s | \(0.73\times\) |
-| 64K | 0.1135 s | 0.0896 s | 0.2026 s | \(1.27\times\) |
-| 128K | 0.4255 s | 0.1861 s | 0.6135 s | \(2.29\times\) |
-| 256K | 1.670 s | 0.394 s | 2.066 s | \(4.23\times\) |
-| 512K | 6.607 s | 0.813 s | 7.421 s | \(8.13\times\) |
-| 1M | 27.454 s | 1.655 s | 29.098 s | \(16.59\times\) |
-| 2M | 113.149 s | 3.367 s | 116.490 s | \(33.60\times\) |
+| 32K | 0.0307 s | 0.0422 s | 0.0728 s | $0.73\times$ |
+| 64K | 0.1135 s | 0.0896 s | 0.2026 s | $1.27\times$ |
+| 128K | 0.4255 s | 0.1861 s | 0.6135 s | $2.29\times$ |
+| 256K | 1.670 s | 0.394 s | 2.066 s | $4.23\times$ |
+| 512K | 6.607 s | 0.813 s | 7.421 s | $8.13\times$ |
+| 1M | 27.454 s | 1.655 s | 29.098 s | $16.59\times$ |
+| 2M | 113.149 s | 3.367 s | 116.490 s | $33.60\times$ |
 
 其中 Discovery 与 FlashMLA 两列来自 5 次 instrumented replay 的同-trial
 chunk-event sums；Direct total 来自另行采集的 20 次重复 clean replay。
@@ -2550,32 +2550,32 @@ Direct total。
 
 64K 是第一个预先指定的 discovery-dominant checkpoint。严格结论只能写成
 
-\[
+$$
 \boxed{\text{prespecified checkpoint bracket}=[32K,64K]},
-\]
+$$
 
 而不能把 64K 插值成连续、精确的 crossover。`[MEASURED]`
 
 为了区分有限区间上的缩放形状与单点波动，我们还在 5 条 paired attribution
 trajectories 内计算相邻 doubling 的局部有效指数：
 
-\[
+$$
 \alpha_s(N)=
 \operatorname{median}_{r=1,\ldots,5}
 \log_2\frac{T_{s,r}(2N)}{T_{s,r}(N)}.
-\]
+$$
 
-| 区间 | \(\alpha_{\mathrm{Discovery}}\) | \(\alpha_{\mathrm{SparseMain}}\) |
+| 区间 | $\alpha_{\mathrm{Discovery}}$ | $\alpha_{\mathrm{SparseMain}}$ |
 |---:|---:|---:|
 | 128K→256K | 1.972 | 1.083 |
 | 256K→512K | 1.984 | 1.045 |
 | 512K→1M | 2.055 | 1.025 |
 | 1M→2M | 2.043 | 1.025 |
 
-从 256K 到 2M，Discovery 增长 \(67.75\times\)，对应两端点有效指数
-\(2.027\)；FlashMLA sparse prefill 增长 \(8.54\times\)，对应
-\(1.031\)。这些指数只描述本次五条 fixed-input timing trajectories。结果与
-“all-candidate discovery 近二次、fixed-\(\kappa\) sparse main 近线性”的
+从 256K 到 2M，Discovery 增长 $67.75\times$，对应两端点有效指数
+$2.027$；FlashMLA sparse prefill 增长 $8.54\times$，对应
+$1.031$。这些指数只描述本次五条 fixed-input timing trajectories。结果与
+“all-candidate discovery 近二次、fixed-$\kappa$ sparse main 近线性”的
 有限范围预测一致，但它们不是 OLS 拟合、模型输入分布上的总体估计，更不是对
 渐近复杂度的实验证明。
 
@@ -2584,54 +2584,54 @@ trajectories 内计算相邻 doubling 的局部有效指数：
 *图 2：左图的 Discovery 与 FlashMLA 曲线来自 5 次 instrumented replay 的
 同-trial cumulative chunk-event sums，不是 20 次 clean replay 的 direct total；
 右图绘制二者之比。所有 checkpoint 都是预先指定的离散测量点，连线只作视觉
-引导；阴影表示 \([32K,64K]\) 的离散 crossover bracket，不是连续插值或
+引导；阴影表示 $[32K,64K]$ 的离散 crossover bracket，不是连续插值或
 置信区间。*
 
 **4M 是容量删失点，而不是一个 latency 数据点。** 在冻结的
-\(C=4096,\kappa=2048\) 和当前 unfused PyTorch Top-K 路径下，preflight 给出的
+$C=4096,\kappa=2048$ 和当前 unfused PyTorch Top-K 路径下，preflight 给出的
 严格下界包括 64.004 GiB DeepGEMM carrier backing、64 GiB Top-K contiguous
 copy，以及 5.626 GiB resident tensors，总计至少
 
-\[
+$$
 133.630\ {\rm GiB}>79.180\ {\rm GiB}.
-\]
+$$
 
 因此实验在实际分配前将 4M 标记为 capacity-censored，没有伪造 latency，也
-没有把它称作实测 OOM。这个结论不等于“DSA 的最大上下文是 2M”：减小 \(C\)、
+没有把它称作实测 OOM。这个结论不等于“DSA 的最大上下文是 2M”：减小 $C$、
 改变 Top-K 实现或做 scorer–selector fusion，都可能改变容量边界。
 
 **长序列上的 Nsys 数据用于解释 kernel 结构，而不是替代正式计时。** 在一个 target
 chunk 上，PyTorch Top-K 的一次语义 contiguous copy 会被 TensorIterator
 拆成约 1 GiB 的 shards：512K 为 8 个 launches，2M 为 32 个 launches。除去
 这些 copy shards，Top-K 的 kernel-family sequence 与 launch count 都保持为
-15，但 radix、scan 和 gather 等 kernel 的 grid 会随 \(N\) 增长，不能笼统说
+15，但 radix、scan 和 gather 等 kernel 的 grid 会随 $N$ 增长，不能笼统说
 “Top-K topology 完全不变”。
 
 同一诊断中，target-chunk attention kernel-active time 从 512K 的
-\(6.465\ {\rm ms}\) 变为 2M 的 \(6.746\ {\rm ms}\)，而
-discovery/attention 从 \(16.50\times\) 增至 \(65.32\times\)。这些 Nsys
+$6.465\ {\rm ms}$ 变为 2M 的 $6.746\ {\rm ms}$，而
+discovery/attention 从 $16.50\times$ 增至 $65.32\times$。这些 Nsys
 duration 只佐证同一机制的增长方向，不能和 cumulative CUDA-event latency
 混成一条曲线。
 
 **128K 的 NCU 数据进一步解释了这些流量来自哪里。** 对 128K 最后
 一个 query chunk 的 2 GiB FP32 carrier，NCU 观察到 scorer 写出约
 1.958 GiB DRAM；随后 Top-K 读取 12.064 GiB，即 carrier 的
-\(6.03\times\)，并写出 2.180 GiB。这些流量来自一次 contiguous copy、四轮
+$6.03\times$，并写出 2.180 GiB。这些流量来自一次 contiguous copy、四轮
 radix threshold，以及 count、scan、gather 等步骤，不是“一次读 logits、一颗
 Top-K kernel”。该 target chunk 的 Top-K stage 包含 17 个 CUDA kernels；
 完整 4K→128K replay 中共有 513 个 Top-K kernels。
 
 但 launch 数量本身不是主要损失。三次 Nsys full replay 中，kernel span 内
-未被 kernel 覆盖的 GPU gap 只有 \(0.283\%\)–\(0.289\%\)。因此 fusion 真正
+未被 kernel 覆盖的 GPU gap 只有 $0.283\%$–$0.289\%$。因此 fusion 真正
 可能消除的是
 
-\[
+$$
 \boxed{
 \text{FP32 logits write}
 +
 \text{Top-K repeated global-memory scans}
 },
-\]
+$$
 
 而不是把 CPU launch 数直接换算成 GPU speedup。
 
@@ -2641,11 +2641,11 @@ fused performance result。当前 DeepGEMM mapping 让一个 persistent CTA 拥�
 exact Top-2048 可以被组织为 CTA 内跨 tile 的在线状态，不天然需要跨 CTA
 global merge。仅 score 与 ID payload 就是
 
-\[
+$$
 2\ \text{queries}\times2048\times
 (\text{FP32 score}+\text{INT32 id})
 =32\ {\rm KiB}.
-\]
+$$
 
 但这 32 KiB 不是免费的。当前 scorer 已使用 640 threads、96 registers/thread
 与 152,228 B dynamic shared memory，并按一 CTA/SM 运行。H100 opt-in SMEM
@@ -2662,17 +2662,17 @@ backpressure，反过来伤害原有 WGMMA/TMA scorer。
 
 我们还单独测量了 paged decode 在生成一个新 token 时的端点开销，并将历史
 长度扩展到 4M：256K–1M 的 discovery/decode ratio 为
-\(5.21\times\)–\(5.23\times\)，随后在 2M 与 4M 变成
-\(12.79\times\) 与 \(17.88\times\)；4M 的 direct full-chain total 为
-\(0.675808\ {\rm ms}\)。但这组计时并不平稳：trial 0–4 与 5–99
+$5.21\times$–$5.23\times$，随后在 2M 与 4M 变成
+$12.79\times$ 与 $17.88\times$；4M 的 direct full-chain total 为
+$0.675808\ {\rm ms}$。但这组计时并不平稳：trial 0–4 与 5–99
 之间存在明显的 event-latency regime shift，而 sparse-decode event median
-在 1M→2M 又从约 \(0.073\ {\rm ms}\) 降到 \(0.036\ {\rm ms}\)。
+在 1M→2M 又从约 $0.073\ {\rm ms}$ 降到 $0.036\ {\rm ms}$。
 
 4M 与旧 128K profile 中观察到的 attention launch signature——kernel identity、
 grid、block 与 launch count——相同，所以已有证据没有把这个台阶解释为一次
 可见的 kernel dispatch 切换；它仍不能排除 kernel 内部分支、cache、clock 或
 其他 runtime state。因此，这组 decode 数据只用于判断各阶段开销的方向，
-不把 \(17.88\times\) 或任一绝对 latency 当成稳定硬件常数，也不把 paged FP8
+不把 $17.88\times$ 或任一绝对 latency 当成稳定硬件常数，也不把 paged FP8
 decode 与上面的 BF16 causal-prefill 曲线拼接。
 
 <!-- Evidence:
@@ -2697,43 +2697,43 @@ results/summaries/e2-h100-20260803-formal1.formal-validation.json.
 
 | 问题 | NSA | DSA |
 |---|---|---|
-| 全局 control plane | \(T/d\) 分辨率的 compression Attention | 全 token 分辨率的 128-D FP8 Indexer |
+| 全局 control plane | $T/d$ 分辨率的 compression Attention | 全 token 分辨率的 128-D FP8 Indexer |
 | 最终选择单位 | 连续 64-token block | 任意单 token |
 | 算法共享轴 | 一个 KV group 的 16 个 query heads | 128 个 main heads |
 | 规则性出现位置 | HBM load 之前 | 离散 rows 搬入 SMEM 之后 |
 | 一个 program 内的 load reuse | 16 heads | SM90 head64 CTA 内 64 heads |
-| 主要 hidden cost | compression path 与 \(dK^{\mathrm{slc}}/dV^{\mathrm{slc}}\) 的 many-to-one reduction | exact all-history scan 与 Top-K |
+| 主要 hidden cost | compression path 与 $dK^{\mathrm{slc}}/dV^{\mathrm{slc}}$ 的 many-to-one reduction | exact all-history scan 与 Top-K |
 
 二者都有“较便宜的全局扫描 + 较昂贵的 sparse data plane”。NSA 的 compressed sequence 长度约为
 
-\[
+$$
 T_c\approx \frac{T}{d},
-\]
+$$
 
 所以 compression Attention 的 score 数仍约为
 
-\[
+$$
 T\cdot T_c
 =
 \Theta\!\left(\frac{T^2}{d}\right).
-\]
+$$
 
 它一方面产生 coarse global-context output，另一方面复用 probability 做
 selection routing。DSA 的 Indexer 是 routing-only，但保持 full token
 resolution，因此完整 causal sequence 的候选分数仍为
 
-\[
+$$
 \sum_{t=1}^{T}t
 =
 \Theta(T^2).
-\]
+$$
 
-在论文默认把压缩步长 \(d\) 与 selection width \(\kappa\) 视为固定配置时，
+在论文默认把压缩步长 $d$ 与 selection width $\kappa$ 视为固定配置时，
 两种方法都没有把“发现全局相关位置”变成渐近线性；它们只是把发现过程搬到了
 更便宜的表示上：NSA 降低 token resolution，DSA 降低 feature dimension
 并使用 FP8。真正不同的是规则性在什么时候出现：
 
-\[
+$$
 \boxed{
 \begin{aligned}
 \text{NSA:}\quad&
@@ -2745,7 +2745,7 @@ resolution，因此完整 causal sequence 的候选分数仍为
 \rightarrow\text{离散 token IDs}
 \rightarrow\text{load 后重建规则性}.
 \end{aligned}}
-\]
+$$
 
 这里还要区分两个容易混淆的 reuse：
 
@@ -2755,9 +2755,9 @@ resolution，因此完整 causal sequence 的候选分数仍为
 
 对于一个 query，NSA 的一个 block ID 代表
 
-\[
+$$
 64\ \text{tokens}\times16\ \text{heads}=1024
-\]
+$$
 
 个 logit pairs，而同一 KV row 在一个 program 内被 16 heads 使用。DSA 的一个
 token ID 在算法上由 128 main heads 共享，但公开的 SM90 sparse-prefill 路径
@@ -2767,7 +2767,7 @@ token ID 在算法上由 128 main heads 共享，但公开的 SM90 sparse-prefil
 
 因此，评估 sparse Attention 时必须把完整链条放进同一本账：
 
-\[
+$$
 \boxed{
 \text{selector/scorer}
 +\text{routing or Top-K}
@@ -2776,15 +2776,15 @@ token ID 在算法上由 128 main heads 共享，但公开的 SM90 sparse-prefil
 +\text{sparse core}
 +\text{backward reduction}.
 }
-\]
+$$
 
 只 benchmark 最后的 sparse core，会恰好把最难扩展的部分移出图表。只解释
-forward skip 了多少 pairs，却不给 \(dQ,dK,dV\) 找到稳定 owner，也还不是一个
+forward skip 了多少 pairs，却不给 $dQ,dK,dV$ 找到稳定 owner，也还不是一个
 训练可执行的 primitive。
 
 NSA 与 DSA 最终代表两条互补而不等价的路线：
 
-\[
+$$
 \boxed{
 \begin{aligned}
 \text{NSA:}\quad&
@@ -2792,11 +2792,11 @@ NSA 与 DSA 最终代表两条互补而不等价的路线：
 \text{DSA:}\quad&
 \text{保留 token-level 自由，再由共享 selection 与专用 kernel 恢复规则 tile。}
 \end{aligned}}
-\]
+$$
 
 这条研究链留下的真正开放问题不是“下一种 sparse mask 应该长什么样”，而是：
 
-> **能否避免全量 \(\Theta(L^2)\) Discovery，同时仍向 kernel 暴露足够共享、规则且可归约的
+> **能否避免全量 $\Theta(L^2)$ Discovery，同时仍向 kernel 暴露足够共享、规则且可归约的
 > sparse workload？**
 
 层次化 routing、近似检索、跨 query 复用候选集，都可能打破 exact
