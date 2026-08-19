@@ -335,6 +335,14 @@ li::marker {
   padding: 0.2em 0;
 }
 
+.katex .sizing.reset-size6.size3 {
+  font-size: 0.7em;
+}
+
+.katex .sizing.reset-size3.size1 {
+  font-size: 0.7142857143em;
+}
+
 .theme-toggle {
   position: fixed;
   top: 18px;
