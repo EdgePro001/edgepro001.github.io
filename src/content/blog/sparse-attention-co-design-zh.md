@@ -8,6 +8,28 @@ translationKey: sparse-attention-co-design
 category: technical
 ---
 
+## TL;DR
+
+- **稀疏率不等于真实加速。** Sparse Attention 少算了多少，只是问题的一半；
+  选中的数据能否被规则地搬运和复用，以及为了找到这些数据付出了多少代价，
+  同样决定端到端性能。
+- **NSA 在读取数据之前制造规则性。** 它选择连续的 64-token blocks，并让
+  16 个 query heads 共享选择结果，使稀疏工作负载可以直接映射为规则 GPU tile。
+- **DSA 在读取数据之后恢复规则性。** 它允许选择离散 token，但让 128 个主
+  heads 共享 token IDs，再由 FlashMLA 将随机 rows 搬入 SMEM、重组为规则 tile；
+  代价是 Discovery（Indexer + exact Top-K）仍需扫描全部候选。
+- **两组 H100 实验说明，主要风险在 Discovery，而不只是随机访存。** 在本文
+  测试的 sparse-prefill 配置下，八组随机行序排列相对有序访问均未检出延迟
+  惩罚，点估计差异不超过 0.47%；在公开的未融合 DSA 链路中，Discovery 在
+  64K 预设检查点首次超过 FlashMLA，并在 256K–2M 区间增长 67.75×，而
+  FlashMLA 增长 8.54×。前一结果不等价于“随机访问免费”，后一结果也不是
+  production DeepSeek DSA 的性能结论。
+- **因此必须优化完整稀疏链路，而不能只 benchmark 最后的 sparse kernel。**
+  Scorer–TopK fusion 有机会消除完整 FP32 scores 的 HBM 往返，但不会减少
+  exact selector 必须判断的候选数；若要改变二次增长，需要进一步研究分层
+  routing、近似检索或跨 query 复用候选集。这是本文指出的研究方向，而不是
+  已经实现的加速结果。
+
 ## 1. Opening
 
 Sparse Attention 的公式并不难。难的是：算法选出的 KV 不再构成规则矩阵，
