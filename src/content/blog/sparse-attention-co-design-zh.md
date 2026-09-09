@@ -10,7 +10,7 @@ category: technical
 
 ## TL;DR
 
-- **稀疏率不等于真实加速。** Sparse Attention 少算了多少，只是问题的一半；
+- **稀疏程度高不一定更快。** Sparse Attention 少算了多少，只是问题的一半；
   选中的数据能否被规则地搬运和复用，以及为了找到这些数据付出了多少代价，
   同样决定端到端性能。
 - **NSA 在读取数据之前制造规则性。** 它选择连续的 64-token blocks，并让
@@ -18,17 +18,14 @@ category: technical
 - **DSA 在读取数据之后恢复规则性。** 它允许选择离散 token，但让 128 个主
   heads 共享 token IDs，再由 FlashMLA 将随机 rows 搬入 SMEM、重组为规则 tile；
   代价是 Discovery（Indexer + exact Top-K）仍需扫描全部候选。
-- **两组 H100 实验说明，主要风险在 Discovery，而不只是随机访存。** 在本文
-  测试的 sparse-prefill 配置下，八组随机行序排列相对有序访问均未检出延迟
-  惩罚，点估计差异不超过 0.47%；在公开的未融合 DSA 链路中，Discovery 在
-  64K 预设检查点首次超过 FlashMLA，并在 256K–2M 区间增长 67.75×，而
-  FlashMLA 增长 8.54×。前一结果不等价于“随机访问免费”，后一结果也不是
-  production DeepSeek DSA 的性能结论。
-- **因此必须优化完整稀疏链路，而不能只 benchmark 最后的 sparse kernel。**
-  Scorer–TopK fusion 有机会消除完整 FP32 scores 的 HBM 往返，但不会减少
-  exact selector 必须判断的候选数；若要改变二次增长，需要进一步研究分层
-  routing、近似检索或跨 query 复用候选集。这是本文指出的研究方向，而不是
-  已经实现的加速结果。
+- **DSA 的瓶颈与地址随机性没有强关联，而在于找出这些 token 的过程。** 在
+  本文测试的 H100 sparse-prefill 配置下，八组随机行序排列与有序访问的延迟
+  点估计相差不超过 0.47%；但在公开 DSA 链路中，Discovery（Indexer + Top-K）
+  在 64K 检查点已经比 FlashMLA 更慢，并且随着上下文继续增长而迅速扩大差距。
+- **因此需要优化 Discovery，而不只是最后的 sparse kernel。** 系统层面可以
+  融合 Indexer 和 Top-K，避免完整 FP32 scores 的写回与重复读取；算法层面则
+  需要避免每个 query 都扫描全部历史 KV。前者降低当前实现的常数开销，后者
+  才可能从根本上改变长上下文下的增长趋势。
 
 ## 1. Opening
 
