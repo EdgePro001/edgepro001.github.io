@@ -8,6 +8,31 @@ translationKey: sparse-attention-co-design
 category: technical
 ---
 
+## TL;DR
+
+- **More sparsity does not necessarily mean more speed.** Reducing computation is
+  only half the problem. End-to-end performance also depends on whether the selected
+  data can be moved and reused regularly, and on how much work it takes to find that
+  data.
+- **NSA creates regularity before loading the data.** It selects contiguous
+  64-token blocks and shares each selection across 16 query heads, allowing the
+  sparse workload to map directly to a regular GPU tile.
+- **DSA reconstructs regularity after loading the data.** It permits arbitrary
+  token selection but shares token IDs across all 128 main heads. FlashMLA then moves
+  scattered rows into SMEM and repacks them into regular tiles. The cost is that
+  Discovery (Indexer plus exact Top-K) must still scan every candidate.
+- **DSA's bottleneck is not strongly tied to address randomness; it lies in finding
+  the selected tokens.** In the tested H100 sparse-prefill configuration, latency
+  point estimates for eight random row permutations stayed within 0.47% of sorted
+  access. In the public DSA pipeline, however, Discovery (Indexer plus Top-K) was
+  already slower than FlashMLA at the 64K checkpoint, and the gap widened rapidly
+  with context length.
+- **The system must therefore optimize Discovery, not only the final sparse kernel.**
+  At the systems level, fusing the Indexer with Top-K can avoid writing and rereading
+  the complete FP32 score matrix. At the algorithmic level, each query must avoid
+  scanning the entire KV history. The former reduces constant-factor overhead in the
+  current implementation; the latter can fundamentally change long-context scaling.
+
 
 ## 1. Opening
 
