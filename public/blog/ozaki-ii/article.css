@@ -17,3 +17,23 @@
 @media (max-width: 620px) {
   .post p:has(> img + img) { grid-template-columns: 1fr; }
 }
+
+.citation {
+  font-size: 0.72em;
+  line-height: 0;
+  vertical-align: super;
+  font-style: normal;
+  white-space: nowrap;
+}
+.citation a {
+  border-bottom: 0;
+  text-decoration: none;
+  padding: 0 0.1em;
+}
+.citation a:hover { text-decoration: underline; }
+.reference-anchor { scroll-margin-top: 5rem; }
+.reference-anchor:target {
+  background: var(--note-bg, #f3f7f7);
+  outline: 2px solid var(--technical, #116d6b);
+  outline-offset: 3px;
+}

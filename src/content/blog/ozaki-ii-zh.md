@@ -25,7 +25,7 @@ category: technical
 
 ## 1 用多路 INT8 矩阵乘法完成一次高精度计算
 
-设 $A\in\mathbb R^{p\times q}$、$B\in\mathbb R^{q\times r}$，目标是 $C=AB$。$q$ 是每个输出内积的长度；方阵实验里 $p=q=r=n$。Ozaki II 选择 $s$ 个两两互素的小模数 $m_1,\ldots,m_s$，记 $M=\prod_{t=1}^{s}m_t$，用各路余数共同表示缩放后的整数输入。
+设 $A\in\mathbb R^{p\times q}$、$B\in\mathbb R^{q\times r}$，目标是 $C=AB$。$q$ 是每个输出内积的长度；方阵实验里 $p=q=r=n$。Ozaki II 选择 $s$ 个两两互素的小模数 $m_1,\ldots,m_s$，记 $M=\prod_{t=1}^{s}m_t$，用各路余数共同表示缩放后的整数输入。<sup class="citation"><a href="#ref-1" aria-label="参考文献 1" title="Ozaki Scheme II">[1]</a></sup>
 
 先根据乘积上界选择对角缩放矩阵 $D\in\mathbb R^{p\times p}$、$E\in\mathbb R^{r\times r}$，其对角元素均为正的二次幂。左乘 $D$ 缩放 A 的每一行，右乘 $E$ 缩放 B 的每一列。Ozaki II的整个操作流程大概如下表所示，其中 $t=1,\ldots,s$ 标记对应模数的计算分支：
 
@@ -44,7 +44,7 @@ $$
 q\,2^{14}<2^{31}\quad\Longleftrightarrow\quad q<131072
 $$
 
-是 INT32 累加不溢出的充分条件；它也约束中间部分和。范围内的整数乘加是精确的，但完整 FP64 结果仍受输入截断和重构误差影响。[论文 §3.1](https://arxiv.org/html/2504.08009v4#S3.SS1)
+是 INT32 累加不溢出的充分条件；它也约束中间部分和。范围内的整数乘加是精确的，但完整 FP64 结果仍受输入截断和重构误差影响。[论文 §3.1](https://arxiv.org/html/2504.08009v4#S3.SS1)<sup class="citation"><a href="#ref-1" aria-label="参考文献 1" title="Ozaki Scheme II">[1]</a></sup>
 
 $s$ 个模数就需要 $s$ 次主 GEMM。模数越多，可恢复范围越大，通常能保留更多输入信息，但每多一路，都要增加输入取余、GEMM 和输出处理。后文 fast-14、accu-14 中的 14 都指主计算使用 14 个模数。
 
@@ -61,7 +61,7 @@ $$
 
 **accu 多做一次 INT8 GEMM 来估界。** 它将绝对值输入缩放并向上量化成 INT8 矩阵，保证还原尺度后逐项不小于原绝对值，再用它们的乘积建立上界。这保留了对应位置的关系，通常能减少过度估计，从而在同一模数预算下保留更多信息；具体效果仍取决于数据和量化。
 
-对后面的性能分析，关键是这笔额外工作的位置：**accu 的估界输入转换、一次估界 GEMM 和结果归约，全都计入绿色预处理。** 因此绿色并非全是逐元素操作，accu 还含有一次 $O(pqr)$ 的矩阵乘法。[论文中的两种估界](https://arxiv.org/html/2504.08009v4#S4.SS1)
+对后面的性能分析，关键是这笔额外工作的位置：**accu 的估界输入转换、一次估界 GEMM 和结果归约，全都计入绿色预处理。** 因此绿色并非全是逐元素操作，accu 还含有一次 $O(pqr)$ 的矩阵乘法。[论文中的两种估界](https://arxiv.org/html/2504.08009v4#S4.SS1)<sup class="citation"><a href="#ref-1" aria-label="参考文献 1" title="Ozaki Scheme II">[1]</a></sup>
 
 ## 3 主乘法加速之后，预处理成为一笔不小的成本
 
@@ -72,16 +72,16 @@ $$
 | GH200 / 16384 | 60.9 | 80.2 | 71.1 | 62.6 | 56.6 |
 | RTX 4090 / 8192 | 0.62 | 9.81 | 9.23 | 7.83 | 7.41 |
 
-*来源：论文的 GPU 吞吐测试（[Table 3、4](https://arxiv.org/html/2504.08009v4#S4.SS1)）。完整尺寸与模数配置见[补充图表](/blog/ozaki-ii/paper-results-zh.html)。*
+*来源：论文的 GPU 吞吐测试（[Table 3、4](https://arxiv.org/html/2504.08009v4#S4.SS1)<sup class="citation"><a href="#ref-1" aria-label="参考文献 1" title="Ozaki Scheme II">[1]</a></sup>）。完整尺寸与模数配置见[补充图表](/blog/ozaki-ii/paper-results-zh.html)。*
 
-fast-14 在这两个配置上分别达到原生 DGEMM 的约 **1.32×** 和 **15.8×**。差异与硬件的吞吐比例有关：论文列出的 GH200 稠密 INT8 Tensor / FP64 Tensor 峰值分别为 1979 TOPS / 67 TFLOPS；RTX 4090 的 INT8 Tensor / 普通 FP64 峰值则为 660.6 TOPS / 1.29 TFLOPS。RTX 4090的原生 FP64 吞吐相较于GH200弱得多。[论文硬件规格](https://arxiv.org/html/2504.08009v4#S1)此外，同尺寸、同模数数量下 fast 均快于 accu，增加模数会降低吞吐。
+fast-14 在这两个配置上分别达到原生 DGEMM 的约 **1.32×** 和 **15.8×**。差异与硬件的吞吐比例有关：论文列出的 GH200 稠密 INT8 Tensor / FP64 Tensor 峰值分别为 1979 TOPS / 67 TFLOPS；RTX 4090 的 INT8 Tensor / 普通 FP64 峰值则为 660.6 TOPS / 1.29 TFLOPS。RTX 4090的原生 FP64 吞吐相较于GH200弱得多。[论文硬件规格](https://arxiv.org/html/2504.08009v4#S1)<sup class="citation"><a href="#ref-1" aria-label="参考文献 1" title="Ozaki Scheme II">[1]</a></sup>此外，同尺寸、同模数数量下 fast 均快于 accu，增加模数会降低吞吐。
 
 再看两组大矩阵的阶段占比：
 
 ![GH200：16384 阶 fast 的阶段耗时占比](/blog/ozaki-ii/assets/paper-fig6d.png)
 ![RTX 4090：8192 阶 fast 的阶段耗时占比](/blog/ozaki-ii/assets/paper-fig7d.png)
 
-*左图为 GH200，右图为 RTX 4090；窄屏按上下排列。横轴是模数数量，每根柱子归一化为 100%；颜色与 §1 的流程表一致。摘自论文 [Fig. 6(d)、7(d)](https://arxiv.org/html/2504.08009v4#S4.SS1)，两图尺寸不同，只显示相对速度而非绝对速度。*
+*左图为 GH200，右图为 RTX 4090；窄屏按上下排列。横轴是模数数量，每根柱子归一化为 100%；颜色与 §1 的流程表一致。摘自论文 [Fig. 6(d)、7(d)](https://arxiv.org/html/2504.08009v4#S4.SS1)<sup class="citation"><a href="#ref-1" aria-label="参考文献 1" title="Ozaki Scheme II">[1]</a></sup>，两图尺寸不同，只显示相对速度而非绝对速度。*
 
 从图中我们看到，规模增大时主 GEMM 占比通常提高，但即使主 GEMM （黄色）已占大头，预处理（绿色）仍然是一笔显著的开销。我们在 H20 设备上用profiling工具对这个问题进行了详细的探究：先从耗时角度测量，再用复杂度、硬件计数器和机器指令逐层进一步分析解释。
 
@@ -131,7 +131,7 @@ accu
   原 A/B 缩放截断 → s 路余数
 ```
 
-> 注释：输入生成、工作区分配、主机到设备传输不在本次绿色计时内。[历史实现 `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp)
+> 注释：输入生成、工作区分配、主机到设备传输不在本次绿色计时内。[历史实现 `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp)<sup class="citation"><a href="#ref-2" aria-label="参考文献 2" title="GEMMul8">[2]</a></sup>
 
 ### 5.2 对预处理的细致拆分计时
 
@@ -192,7 +192,7 @@ $$
 
 ## 7 内核分析：查明预处理受限的原因
 
-Nsight Compute（下文简称 NCU）是 NVIDIA 的 GPU 内核分析工具，可以读取执行流水线和内存系统的硬件指标。表中的 DRAM 吞吐指 GPU 显存的数据传输速率。我们用它对未拆分的原始 fast 内核采样，得到：
+Nsight Compute（下文简称 NCU）是 NVIDIA 的 GPU 内核分析工具，可以读取执行流水线和内存系统的硬件指标。<sup class="citation"><a href="#ref-4" aria-label="参考文献 4" title="Nsight Compute Profiling Guide">[4]</a></sup>表中的 DRAM 吞吐指 GPU 显存的数据传输速率。我们用它对未拆分的原始 fast 内核采样，得到：
 
 | $n/s$ | 内核 | FP64 流水线 % | INT Tensor 流水线 % | DRAM 吞吐 % |
 |---|---|---:|---:|---:|
@@ -205,7 +205,7 @@ Nsight Compute（下文简称 NCU）是 NVIDIA 的 GPU 内核分析工具，可�
 | 8192/14 | 绿色 B | 98.3 | 0 | 4.88 |
 | 8192/14 | 黄色 GEMM | 0 | 95.4 | 9.79 |
 
->  注释：*各列按各自资源的可持续峰值归一化。*
+>  注释：*各列按各自资源的可持续峰值归一化。<sup class="citation"><a href="#ref-4" aria-label="参考文献 4" title="Nsight Compute Profiling Guide">[4]</a></sup>*
 
 **理解这组数据的关键是：H20 上普通 FP64 CUDA Core 算术的吞吐，远低于 INT8 Tensor Core 矩阵乘加。** 这里的普通 FP64 CUDA Core 指 SM 内执行逐线程双精度算术的单元。绿色的 FP64 指标达到约 98%，说明这条执行路径已经很忙；黄色的 INT Tensor 指标达到约 95.4%，说明矩阵乘法也充分使用了自己的执行资源。两个百分比相近，但各自对应的吞吐上限相差很大。换句话说，**绿色已经接近一条吞吐较低的 FP64 路径的能力上限，黄色则在一条吞吐高得多的 INT8 Tensor Core 路径上执行。** 即使两边都高效利用了各自的硬件，绿色仍然可能因为每单位工作的执行成本更高，而花掉与黄色相近甚至更多的时间。这里比较的是大量并行计算的吞吐，不是某一条 FP64 指令与某一条 Tensor 指令的延迟。
 
@@ -220,7 +220,7 @@ SM 中的调度器与寄存器
     └── 访存、转换与其他执行路径
 ```
 
-这种吞吐差距来自不同的计算结构与硬件资源配置。普通 FP64 算术处理宽有效位、指数、规格化和舍入；INT8 Tensor Core 使用较窄整数，并通过专门的矩阵乘加结构，每个周期批量执行大量运算、复用操作数。它能够以很高的吞吐消化 GEMM 的大量乘加。[NVIDIA 对 Hopper Tensor Core 的说明](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/#h100_tensor_core_architecture)
+这种吞吐差距来自不同的计算结构与硬件资源配置。普通 FP64 算术处理宽有效位、指数、规格化和舍入；INT8 Tensor Core 使用较窄整数，并通过专门的矩阵乘加结构，每个周期批量执行大量运算、复用操作数。它能够以很高的吞吐消化 GEMM 的大量乘加。[NVIDIA 对 Hopper Tensor Core 的说明](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/#h100_tensor_core_architecture)<sup class="citation"><a href="#ref-3" aria-label="参考文献 3" title="NVIDIA Hopper Architecture In-Depth">[3]</a></sup>
 
 预处理（绿色）最终写出 INT8，但是生成它们的计算却并非使用 INT8 Tensor Core。取余、舍入、求最大值并不直接具有矩阵乘加的结构。普通逐元素操作仍然由很多 GPU 线程并行执行，但其总吞吐受到相应执行资源限制。
 
@@ -263,7 +263,7 @@ return static_cast<int8_t>(tmp);
 | `val.z` | FP32 | $-m$ |
 | `val.w` | FP32 | 预先计算的近似倒数 $\alpha_{32}\approx1/m$ |
 
-倒数预先存入 GPU 常量内存，每次取余通过乘法估计商。源代码见 [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp#L155) 和[模数常量表](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/table.hpp#L26)。
+倒数预先存入 GPU 常量内存，每次取余通过乘法估计商。源代码见 [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp#L155) 和[模数常量表](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/table.hpp#L26)<sup class="citation"><a href="#ref-2" aria-label="参考文献 2" title="GEMMul8">[2]</a></sup>。
 
 ### 8.2 三轮归约进行取余和修正
 
@@ -281,7 +281,7 @@ $$
 
 这里 $\operatorname{fl}_{64}$、$\operatorname{fl}_{32}$ 表示舍入到对应浮点格式；`rint` 将数值舍入到最近整数，中点取偶数，返回值仍然是浮点类型。三个步骤分别是估计整数商、计算剩余部分，再将这个较小的残余转为 FP32。
 
-`fma(h0, -m, a)` 很关键：它将 $a-h_0m$ 作为一次融合乘加计算，乘法中间结果不单独舍入，只对最终结果舍入。如果先把较大的 $h_0m$ 舍入，再与 $a$ 相减，中间丢失的低位就可能影响我们需要的小余数。[CUDA 对 `rint` 和 `fma` 的定义](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__DOUBLE.html)
+`fma(h0, -m, a)` 很关键：它将 $a-h_0m$ 作为一次融合乘加计算，乘法中间结果不单独舍入，只对最终结果舍入。如果先把较大的 $h_0m$ 舍入，再与 $a$ 相减，中间丢失的低位就可能影响我们需要的小余数。[CUDA 对 `rint` 和 `fma` 的定义](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__DOUBLE.html)<sup class="citation"><a href="#ref-6" aria-label="参考文献 6" title="CUDA Math API Reference Manual">[6]</a></sup>
 
 但 FMA 只解决乘加过程的舍入方式。近似倒数和计算 $a\alpha_{64}$ 时的舍入，仍可能使 $h_0$ 偏离理想的最近整数商，所以第一轮之后的残余还可能包含若干个模数。
 
@@ -309,7 +309,7 @@ $$
     → 转换、打包为 INT8
 ```
 
-这也说明，最终结果只占 8 位，并不意味着中间计算都能用 8 位完成。若一开始就把大的 $a$ 转为 FP32，舍入可能已经改变其模余数，后续修正无法自动找回丢失的信息。混合精度实现先处理大数，再降低残余计算的精度。[`rintf` 的浮点取整语义](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html)
+这也说明，最终结果只占 8 位，并不意味着中间计算都能用 8 位完成。若一开始就把大的 $a$ 转为 FP32，舍入可能已经改变其模余数，后续修正无法自动找回丢失的信息。混合精度实现先处理大数，再降低残余计算的精度。[`rintf` 的浮点取整语义](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html)<sup class="citation"><a href="#ref-6" aria-label="参考文献 6" title="CUDA Math API Reference Manual">[6]</a></sup>
 
 ### 8.3 每一步在实际汇编中的对应
 
@@ -335,7 +335,7 @@ cuobjdump --dump-sass build/gemmul8.o
 | `1960` | `FFMA R27, R22, R30, R27` | 计算 $x_2$ |
 | `1980` | `F2I.TRUNC.NTZ R26, R27` | 转换为整数寄存器值，供后续 INT8 打包使用 |
 
-`D` 开头的 `DMUL`、`DFMA` 是双精度乘法和融合乘加；`FMUL`、`FFMA` 在这里用于单精度。`FRND` 将浮点数舍入为整数值，`F2F` 改变浮点格式，`F2I` 才转换到整数表示。后续还存在 `PRMT` 字节打包与写回指令，所以最后一行并不代表整个预处理已经结束。[NVIDIA 指令分类](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html)
+`D` 开头的 `DMUL`、`DFMA` 是双精度乘法和融合乘加；`FMUL`、`FFMA` 在这里用于单精度。`FRND` 将浮点数舍入为整数值，`F2F` 改变浮点格式，`F2I` 才转换到整数表示。后续还存在 `PRMT` 字节打包与写回指令，所以最后一行并不代表整个预处理已经结束。[NVIDIA 指令分类](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html)<sup class="citation"><a href="#ref-5" aria-label="参考文献 5" title="CUDA Binary Utilities">[5]</a></sup>
 
 按这一条元素计算链，可以数出 **1 次 FP64 乘法、1 次 FP64 舍入、1 次 FP64 FMA、1 次 FP64→FP32 转换、两组三条 FP32 修正指令，以及整数转换**。它们之间还存在数据依赖：FP32 修正需要等待 FP64 残余，第二次修正需要等待第一次修正的结果。
 
@@ -498,7 +498,7 @@ accu 还要生成估界输入、执行一次估界 GEMM 并处理上界，其与
 
 当前代码已经把缩放和截断放在模数循环外，同一个元素会在寄存器中供多路取余使用。利用缩放后的数已经具有整数值，在循环外完成一次精确的整数转换，让循环内主要执行整数运算。
 
-可以尝试缩放后 $a$ 有限且 $|a|<2^{63}$ 的情形。在这个范围内，整数值的 FP64 数可以精确转换为 INT64；超出范围时保留原取余路径。CUDA 提供相应的 `__double2ll_rz` 转换；不过必须在转换前检查范围。[NVIDIA 类型转换文档](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__INTRINSIC__CAST.html)
+可以尝试缩放后 $a$ 有限且 $|a|<2^{63}$ 的情形。在这个范围内，整数值的 FP64 数可以精确转换为 INT64；超出范围时保留原取余路径。CUDA 提供相应的 `__double2ll_rz` 转换；不过必须在转换前检查范围。[NVIDIA 类型转换文档](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__INTRINSIC__CAST.html)<sup class="citation"><a href="#ref-6" aria-label="参考文献 6" title="CUDA Math API Reference Manual">[6]</a></sup>
 
 一种具体做法是把绝对值分成高、低两个 32 位无符号整数：
 
@@ -551,14 +551,14 @@ Ozaki II 展示了一个很具体的算法与硬件协同设计思路：用多�
 
 ## 参考文献
 
-[1] K. Ozaki, Y. Uchino, and T. Imamura. [Ozaki Scheme II: A GEMM-oriented emulation of floating-point matrix multiplication using an integer modular technique](https://arxiv.org/abs/2504.08009v4). arXiv:2504.08009v4, 2026.
+<span id="ref-1" class="reference-anchor">[1]</span> K. Ozaki, Y. Uchino, and T. Imamura. [Ozaki Scheme II: A GEMM-oriented emulation of floating-point matrix multiplication using an integer modular technique](https://arxiv.org/abs/2504.08009v4). arXiv:2504.08009v4, 2026.
 
-[2] RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a). 软件源代码，提交 `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`，2025-04-09.
+<span id="ref-2" class="reference-anchor">[2]</span> RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a). 软件源代码，提交 `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`，2025-04-09.
 
-[3] M. Andersch et al. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/). NVIDIA Technical Blog, 2022-03-22.
+<span id="ref-3" class="reference-anchor">[3]</span> M. Andersch et al. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/). NVIDIA Technical Blog, 2022-03-22.
 
-[4] NVIDIA. [Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html). 在线技术文档，访问日期：2026-10-01.
+<span id="ref-4" class="reference-anchor">[4]</span> NVIDIA. [Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html). 在线技术文档，访问日期：2026-10-01.
 
-[5] NVIDIA. [CUDA Binary Utilities](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html). 在线技术文档，访问日期：2026-10-01.
+<span id="ref-5" class="reference-anchor">[5]</span> NVIDIA. [CUDA Binary Utilities](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html). 在线技术文档，访问日期：2026-10-01.
 
-[6] NVIDIA. [CUDA Math API Reference Manual](https://docs.nvidia.com/cuda/cuda-math-api/index.html). 在线技术文档，访问日期：2026-10-01.
+<span id="ref-6" class="reference-anchor">[6]</span> NVIDIA. [CUDA Math API Reference Manual](https://docs.nvidia.com/cuda/cuda-math-api/index.html). 在线技术文档，访问日期：2026-10-01.

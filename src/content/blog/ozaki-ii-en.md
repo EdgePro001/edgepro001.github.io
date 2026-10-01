@@ -24,7 +24,7 @@ category: technical
 
 ## 1 Computing a high precision product with multiple INT8 GEMMs
 
-Let $A\in\mathbb R^{p\times q}$, $B\in\mathbb R^{q\times r}$, and $C=AB$. Each output is a dot product of length $q$; in the square experiments, $p=q=r=n$. Ozaki II chooses $s$ small, pairwise coprime moduli $m_1,\ldots,m_s$, with product $M=\prod_{t=1}^{s}m_t$, and jointly represents scaled integer inputs through their residues.
+Let $A\in\mathbb R^{p\times q}$, $B\in\mathbb R^{q\times r}$, and $C=AB$. Each output is a dot product of length $q$; in the square experiments, $p=q=r=n$. Ozaki II chooses $s$ small, pairwise coprime moduli $m_1,\ldots,m_s$, with product $M=\prod_{t=1}^{s}m_t$, and jointly represents scaled integer inputs through their residues.<sup class="citation"><a href="#ref-1" aria-label="Reference 1" title="Ozaki Scheme II">[1]</a></sup>
 
 Product bounds first determine diagonal scaling matrices $D\in\mathbb R^{p\times p}$ and $E\in\mathbb R^{r\times r}$, whose diagonal entries are positive powers of two. Left multiplication by $D$ scales rows of A; right multiplication by $E$ scales columns of B. The complete pipeline follows, with $t=1,\ldots,s$ identifying the modulus channels:
 
@@ -43,7 +43,7 @@ $$
 q\,2^{14}<2^{31}\quad\Longleftrightarrow\quad q<131072
 $$
 
-is sufficient to prevent INT32 accumulation overflow, including intermediate partial sums. Integer multiply-accumulate operations within range are exact. Accuracy of the complete FP64 result still depends on input truncation and reconstruction. [Paper, Section 3.1](https://arxiv.org/html/2504.08009v4#S3.SS1)
+is sufficient to prevent INT32 accumulation overflow, including intermediate partial sums. Integer multiply-accumulate operations within range are exact. Accuracy of the complete FP64 result still depends on input truncation and reconstruction. [Paper, Section 3.1](https://arxiv.org/html/2504.08009v4#S3.SS1)<sup class="citation"><a href="#ref-1" aria-label="Reference 1" title="Ozaki Scheme II">[1]</a></sup>
 
 Using $s$ moduli requires $s$ main GEMMs. More moduli enlarge the reconstruction range and generally allow more input information to be retained, at the cost of additional input residues, GEMMs, and output processing. The suffix 14 in fast-14 and accu-14 denotes 14 moduli for the main computation.
 
@@ -61,7 +61,7 @@ Scanning rows of A and columns of B takes $O(pq+qr)$ work. The bound discards ma
 
 **Accu estimates the bound with one additional INT8 GEMM.** It scales and rounds absolute inputs upward into INT8 matrices, ensuring that each reconstructed entry bounds the original absolute value. Their product then supplies a bound that retains positional relationships. This can reduce overestimation and preserve more input information under the same modulus budget, although the effect depends on the data and quantization.
 
-For the performance discussion, the location of this extra work matters: **accu's bound-input conversion, bound GEMM, and output reduction all belong to green preprocessing.** Green therefore includes an $O(pqr)$ matrix multiplication in accu, alongside its elementwise operations. [The paper's two bounds](https://arxiv.org/html/2504.08009v4#S4.SS1)
+For the performance discussion, the location of this extra work matters: **accu's bound-input conversion, bound GEMM, and output reduction all belong to green preprocessing.** Green therefore includes an $O(pqr)$ matrix multiplication in accu, alongside its elementwise operations. [The paper's two bounds](https://arxiv.org/html/2504.08009v4#S4.SS1)<sup class="citation"><a href="#ref-1" aria-label="Reference 1" title="Ozaki Scheme II">[1]</a></sup>
 
 ## 3 Once the main multiplication is faster, preprocessing becomes a substantial cost
 
@@ -72,9 +72,9 @@ The paper compares against native DGEMM, or double precision matrix multiplicati
 | GH200 / 16384 | 60.9 | 80.2 | 71.1 | 62.6 | 56.6 |
 | RTX 4090 / 8192 | 0.62 | 9.81 | 9.23 | 7.83 | 7.41 |
 
-*Source: the paper's GPU throughput measurements ([Tables 3 and 4](https://arxiv.org/html/2504.08009v4#S4.SS1)). All sizes and modulus configurations are retained in the [supplement](/blog/ozaki-ii/paper-results-en.html).*
+*Source: the paper's GPU throughput measurements ([Tables 3 and 4](https://arxiv.org/html/2504.08009v4#S4.SS1)<sup class="citation"><a href="#ref-1" aria-label="Reference 1" title="Ozaki Scheme II">[1]</a></sup>). All sizes and modulus configurations are retained in the [supplement](/blog/ozaki-ii/paper-results-en.html).*
 
-Fast-14 reaches approximately **1.32×** and **15.8×** the throughput of native DGEMM in these two configurations. The difference is related to hardware throughput ratios: the paper lists dense INT8 Tensor / FP64 Tensor peaks of 1979 TOPS / 67 TFLOPS for GH200, while RTX 4090 has INT8 Tensor / ordinary FP64 peaks of 660.6 TOPS / 1.29 TFLOPS. RTX 4090 has much weaker native FP64 throughput than GH200. [Paper hardware specifications](https://arxiv.org/html/2504.08009v4#S1) In addition, fast is consistently faster than accu at the same size and modulus count, and increasing the number of moduli lowers throughput.
+Fast-14 reaches approximately **1.32×** and **15.8×** the throughput of native DGEMM in these two configurations. The difference is related to hardware throughput ratios: the paper lists dense INT8 Tensor / FP64 Tensor peaks of 1979 TOPS / 67 TFLOPS for GH200, while RTX 4090 has INT8 Tensor / ordinary FP64 peaks of 660.6 TOPS / 1.29 TFLOPS. RTX 4090 has much weaker native FP64 throughput than GH200. [Paper hardware specifications](https://arxiv.org/html/2504.08009v4#S1)<sup class="citation"><a href="#ref-1" aria-label="Reference 1" title="Ozaki Scheme II">[1]</a></sup> In addition, fast is consistently faster than accu at the same size and modulus count, and increasing the number of moduli lowers throughput.
 
 
 Next, consider the stage fractions for two large-matrix configurations:
@@ -82,7 +82,7 @@ Next, consider the stage fractions for two large-matrix configurations:
 ![GH200: stage fractions for fast at matrix order 16384](/blog/ozaki-ii/assets/paper-fig6d.png)
 ![RTX 4090: stage fractions for fast at matrix order 8192](/blog/ozaki-ii/assets/paper-fig7d.png)
 
-*GH200 is on the left and RTX 4090 on the right; narrow screens stack them vertically. The horizontal axis is the modulus count, each bar is normalized to 100%, and the colors follow the pipeline table in Section 1. Excerpts from paper [Figures 6(d) and 7(d)](https://arxiv.org/html/2504.08009v4#S4.SS1). The two figures use different matrix sizes and show relative rather than absolute speed.*
+*GH200 is on the left and RTX 4090 on the right; narrow screens stack them vertically. The horizontal axis is the modulus count, each bar is normalized to 100%, and the colors follow the pipeline table in Section 1. Excerpts from paper [Figures 6(d) and 7(d)](https://arxiv.org/html/2504.08009v4#S4.SS1)<sup class="citation"><a href="#ref-1" aria-label="Reference 1" title="Ozaki Scheme II">[1]</a></sup>. The two figures use different matrix sizes and show relative rather than absolute speed.*
 
 The figures show that the main GEMM share generally increases with matrix size. Yet even when the main GEMMs (yellow) account for most of the time, preprocessing (green) remains a substantial cost. We investigated this in detail using profiling tools on H20: first measuring elapsed time, then examining complexity, hardware counters, and machine instructions to explain the results step by step.
 
@@ -135,7 +135,7 @@ accu
   Scale/truncate original A and B → s residues
 ```
 
-> Note: Input generation, workspace allocation, and host-to-device transfers are outside our green timings. [Historical `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp)
+> Note: Input generation, workspace allocation, and host-to-device transfers are outside our green timings. [Historical `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp)<sup class="citation"><a href="#ref-2" aria-label="Reference 2" title="GEMMul8">[2]</a></sup>
 
 ### 5.2 A detailed timing breakdown of preprocessing
 
@@ -199,7 +199,7 @@ After analyzing complexity, the question becomes: **why does $O(sn^2)$ preproces
 
 ## 7 Kernel analysis: identifying what limits preprocessing
 
-Nsight Compute (NCU below) is NVIDIA's GPU kernel analysis tool, which exposes hardware metrics for execution pipelines and memory systems. DRAM throughput in the table refers to the transfer rate of GPU memory. We sampled the original, unsplit fast kernels with it:
+Nsight Compute (NCU below) is NVIDIA's GPU kernel analysis tool, which exposes hardware metrics for execution pipelines and memory systems.<sup class="citation"><a href="#ref-4" aria-label="Reference 4" title="Nsight Compute Profiling Guide">[4]</a></sup> DRAM throughput in the table refers to the transfer rate of GPU memory. We sampled the original, unsplit fast kernels with it:
 
 | $n/s$ | Kernel | FP64 pipeline % | INT Tensor pipeline % | DRAM throughput % |
 |---|---|---:|---:|---:|
@@ -212,7 +212,7 @@ Nsight Compute (NCU below) is NVIDIA's GPU kernel analysis tool, which exposes h
 | 8192/14 | Green B | 98.3 | 0 | 4.88 |
 | 8192/14 | Yellow GEMM | 0 | 95.4 | 9.79 |
 
-> Note: *Each column is normalized to the sustained peak of its corresponding resource.*
+> Note: *Each column is normalized to the sustained peak of its corresponding resource.<sup class="citation"><a href="#ref-4" aria-label="Reference 4" title="Nsight Compute Profiling Guide">[4]</a></sup>*
 
 **The key to interpreting these numbers is that ordinary FP64 CUDA Core arithmetic on H20 has much lower throughput than INT8 Tensor Core matrix multiplication.** Here, ordinary FP64 CUDA Cores means the SM units that execute per-thread double precision arithmetic. Green's approximately 98% FP64 metric indicates that this execution path is already busy; yellow's approximately 95.4% INT Tensor metric indicates heavy use of its matrix resources. Similar percentages refer to very different throughput ceilings, so they do not imply similar absolute operation rates.
 
@@ -230,7 +230,7 @@ SM schedulers and registers
     └── Memory, conversion, and other execution paths
 ```
 
-The throughput gap reflects different compute structures and hardware resource allocations. Ordinary FP64 arithmetic handles a wide significand, exponents, normalization, and rounding. INT8 Tensor Cores use narrow integer arithmetic and dedicated matrix structures to execute many operations per cycle while reusing operands. This lets them process GEMM's large multiply-accumulate workload at high throughput. [NVIDIA's description of Hopper Tensor Cores](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/#h100_tensor_core_architecture)
+The throughput gap reflects different compute structures and hardware resource allocations. Ordinary FP64 arithmetic handles a wide significand, exponents, normalization, and rounding. INT8 Tensor Cores use narrow integer arithmetic and dedicated matrix structures to execute many operations per cycle while reusing operands. This lets them process GEMM's large multiply-accumulate workload at high throughput. [NVIDIA's description of Hopper Tensor Cores](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/#h100_tensor_core_architecture)<sup class="citation"><a href="#ref-3" aria-label="Reference 3" title="NVIDIA Hopper Architecture In-Depth">[3]</a></sup>
 
 Writing an INT8 output does not make the preceding computation suitable for INT8 Tensor Cores. Remainder generation, rounding, and maximum reductions do not directly have a matrix multiply-accumulate structure. Many GPU threads still execute these elementwise operations in parallel, but their combined rate is limited by the relevant resources.
 
@@ -274,7 +274,7 @@ The four constant-table fields have the following meanings:
 | `val.z` | FP32 | $-m$ |
 | `val.w` | FP32 | Precomputed approximate reciprocal $\alpha_{32}\approx1/m$ |
 
-The reciprocals are stored in GPU constant memory, allowing each reduction to estimate the quotient through multiplication. See [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp#L155) and the [modulus table](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/table.hpp#L26).
+The reciprocals are stored in GPU constant memory, allowing each reduction to estimate the quotient through multiplication. See [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp#L155) and the [modulus table](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/table.hpp#L26)<sup class="citation"><a href="#ref-2" aria-label="Reference 2" title="GEMMul8">[2]</a></sup>.
 
 ### 8.2 Three reduction passes for remainder calculation and correction
 
@@ -292,7 +292,7 @@ $$
 
 Here $\operatorname{fl}_{64}$ and $\operatorname{fl}_{32}$ round to the corresponding floating point formats. `rint` rounds to a nearest integer, with ties to even, while retaining a floating point return type. The steps estimate an integer quotient, compute the remaining part, and convert that smaller residual to FP32.
 
-The FMA matters: `fma(h0, -m, a)` computes $a-h_0m$ as one fused operation, rounding only the final result. Rounding the large intermediate product $h_0m$ separately before subtracting it from $a$ could discard low-order information needed for the small remainder. [CUDA definitions of `rint` and `fma`](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__DOUBLE.html)
+The FMA matters: `fma(h0, -m, a)` computes $a-h_0m$ as one fused operation, rounding only the final result. Rounding the large intermediate product $h_0m$ separately before subtracting it from $a$ could discard low-order information needed for the small remainder. [CUDA definitions of `rint` and `fma`](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__DOUBLE.html)<sup class="citation"><a href="#ref-6" aria-label="Reference 6" title="CUDA Math API Reference Manual">[6]</a></sup>
 
 FMA controls rounding within the multiply-add. It does not make the estimated quotient exact: the approximate reciprocal and rounding of $a\alpha_{64}$ can still move $h_0$ away from the ideal nearest integer quotient. The first residual can therefore retain additional multiples of the modulus.
 
@@ -321,7 +321,7 @@ Scaled, truncated FP64 input
     → Convert and pack into INT8
 ```
 
-An eight-bit result does not imply that eight-bit intermediate arithmetic is sufficient. Converting the large original $a$ to FP32 first can change its residue through rounding; later corrections cannot automatically recover lost information. This implementation handles the large value before reducing the precision used for the residual. [Floating point rounding semantics of `rintf`](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html)
+An eight-bit result does not imply that eight-bit intermediate arithmetic is sufficient. Converting the large original $a$ to FP32 first can change its residue through rounding; later corrections cannot automatically recover lost information. This implementation handles the large value before reducing the precision used for the residual. [Floating point rounding semantics of `rintf`](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html)<sup class="citation"><a href="#ref-6" aria-label="Reference 6" title="CUDA Math API Reference Manual">[6]</a></sup>
 
 ### 8.3 Mapping every step to actual machine instructions
 
@@ -347,7 +347,7 @@ The table follows one element's data dependencies in `vecnorm::scalingB_kernel<d
 | `1960` | `FFMA R27, R22, R30, R27` | Compute $x_2$ |
 | `1980` | `F2I.TRUNC.NTZ R26, R27` | Convert to an integer register value for subsequent INT8 packing |
 
-The `D` in `DMUL` and `DFMA` denotes double precision multiply and fused multiply-add; `FMUL` and `FFMA` operate in single precision here. `FRND` rounds a floating point number to an integer value, `F2F` changes floating point format, and `F2I` converts to an integer representation. Subsequent `PRMT` byte packing and stores remain, so the table's last row is not the end of preprocessing. [NVIDIA instruction classifications](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html)
+The `D` in `DMUL` and `DFMA` denotes double precision multiply and fused multiply-add; `FMUL` and `FFMA` operate in single precision here. `FRND` rounds a floating point number to an integer value, `F2F` changes floating point format, and `F2I` converts to an integer representation. Subsequent `PRMT` byte packing and stores remain, so the table's last row is not the end of preprocessing. [NVIDIA instruction classifications](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html)<sup class="citation"><a href="#ref-5" aria-label="Reference 5" title="CUDA Binary Utilities">[5]</a></sup>
 
 This element's chain contains **one FP64 multiplication, one FP64 rounding, one FP64 FMA, one FP64-to-FP32 conversion, two groups of three FP32 correction instructions, and an integer conversion**. It also has dependencies: the FP32 corrections need the FP64 residual, and the second correction needs the first correction's result.
 
@@ -512,7 +512,7 @@ The preceding evidence narrows the first place to change down to `mod_8i<double>
 
 The current code already scales and truncates each element outside the modulus loop and reuses it in registers across the residue calculations. Since the scaled value is already integral, we can perform one exact integer conversion outside the loop and use primarily integer arithmetic inside it.
 
-We can try this for finite scaled values $a$ satisfying $|a|<2^{63}$. Within this range, an integer-valued FP64 number can be converted exactly to INT64; outside the range, retain the original remainder path. CUDA provides the corresponding `__double2ll_rz` conversion, but the range must be checked before converting. [NVIDIA conversion documentation](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__INTRINSIC__CAST.html)
+We can try this for finite scaled values $a$ satisfying $|a|<2^{63}$. Within this range, an integer-valued FP64 number can be converted exactly to INT64; outside the range, retain the original remainder path. CUDA provides the corresponding `__double2ll_rz` conversion, but the range must be checked before converting. [NVIDIA conversion documentation](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__INTRINSIC__CAST.html)<sup class="citation"><a href="#ref-6" aria-label="Reference 6" title="CUDA Math API Reference Manual">[6]</a></sup>
 
 One concrete approach splits the magnitude into high and low unsigned 32-bit integers:
 
@@ -563,14 +563,14 @@ To explain a performance chart, we therefore need to understand **how much work 
 
 ## References
 
-[1] K. Ozaki, Y. Uchino, and T. Imamura. [Ozaki Scheme II: A GEMM-oriented emulation of floating-point matrix multiplication using an integer modular technique](https://arxiv.org/abs/2504.08009v4). arXiv:2504.08009v4, 2026.
+<span id="ref-1" class="reference-anchor">[1]</span> K. Ozaki, Y. Uchino, and T. Imamura. [Ozaki Scheme II: A GEMM-oriented emulation of floating-point matrix multiplication using an integer modular technique](https://arxiv.org/abs/2504.08009v4). arXiv:2504.08009v4, 2026.
 
-[2] RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a). Source code, commit `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`, April 9, 2025.
+<span id="ref-2" class="reference-anchor">[2]</span> RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a). Source code, commit `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`, April 9, 2025.
 
-[3] M. Andersch et al. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/). NVIDIA Technical Blog, March 22, 2022.
+<span id="ref-3" class="reference-anchor">[3]</span> M. Andersch et al. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/). NVIDIA Technical Blog, March 22, 2022.
 
-[4] NVIDIA. [Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html). Online documentation. Accessed October 1, 2026.
+<span id="ref-4" class="reference-anchor">[4]</span> NVIDIA. [Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html). Online documentation. Accessed October 1, 2026.
 
-[5] NVIDIA. [CUDA Binary Utilities](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html). Online documentation. Accessed October 1, 2026.
+<span id="ref-5" class="reference-anchor">[5]</span> NVIDIA. [CUDA Binary Utilities](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html). Online documentation. Accessed October 1, 2026.
 
-[6] NVIDIA. [CUDA Math API Reference Manual](https://docs.nvidia.com/cuda/cuda-math-api/index.html). Online documentation. Accessed October 1, 2026.
+<span id="ref-6" class="reference-anchor">[6]</span> NVIDIA. [CUDA Math API Reference Manual](https://docs.nvidia.com/cuda/cuda-math-api/index.html). Online documentation. Accessed October 1, 2026.
