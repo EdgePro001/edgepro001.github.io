@@ -100,7 +100,7 @@ We ran the reproduction on a single H20-3e, testing four square matrix sizes, $1
 
 ![H20 breakdown using the sizes from Figure 7](/blog/ozaki-ii/assets/fig7_h20.png)
 
-*Stage fractions measured on H20-3e. The first plot follows the matrix-size layout of paper Figure 6, and the second follows Figure 7; both use our reproduction data rather than the original paper results. Complete summary.*
+*Stage fractions measured on H20-3e. The first plot follows the matrix-size layout of paper Figure 6, and the second follows Figure 7; both use our reproduction data rather than the original paper results.*
 
 First, consider several absolute timings and ratios for fast:
 
@@ -154,7 +154,7 @@ At $n=8192,s=14$, combining A and B timings gives:
 
 ![Operation breakdown inside green](/blog/ozaki-ii/assets/green_operations_h20.png)
 
-*Stage shares in the split diagnostic. Data: operation summary.*
+*Stage shares in the split diagnostic.*
 
 > Note: Splitting adds intermediate FP64 reads and writes, kernel launches, and changes to register and cache behavior. At size 8192, total device time increases by about 0.7% for fast and 3.3% for accu; at size 1024 with two moduli, the disturbance is about 19%. These results nevertheless identify the largest component: with many moduli and large matrices, residue generation occupies most of fast preprocessing. However, in the split result at size 1024 with two moduli, statistics account for about 45.3%, scaling 28.4%, and residues 26.2%; fixed scanning costs are more prominent.
 
@@ -212,7 +212,7 @@ Nsight Compute (NCU below) is NVIDIA's GPU kernel analysis tool, which exposes h
 | 8192/14 | Green B | 98.3 | 0 | 4.88 |
 | 8192/14 | Yellow GEMM | 0 | 95.4 | 9.79 |
 
-> Note: *Data: counter summary. Each column is normalized to the sustained peak of its corresponding resource.*
+> Note: *Each column is normalized to the sustained peak of its corresponding resource.*
 
 **The key to interpreting these numbers is that ordinary FP64 CUDA Core arithmetic on H20 has much lower throughput than INT8 Tensor Core matrix multiplication.** Here, ordinary FP64 CUDA Cores means the SM units that execute per-thread double precision arithmetic. Green's approximately 98% FP64 metric indicates that this execution path is already busy; yellow's approximately 95.4% INT Tensor metric indicates heavy use of its matrix resources. Similar percentages refer to very different throughput ceilings, so they do not imply similar absolute operation rates.
 
@@ -353,7 +353,7 @@ This element's chain contains **one FP64 multiplication, one FP64 rounding, one 
 
 Interleaving elements hides some waiting, and additional threads supply parallel work. Neither removes the arithmetic demand per residue. Once the constrained execution path is already busy, additional parallelism cannot increase throughput indefinitely. Exact pipeline attribution still requires counters; instruction mnemonics alone do not assign all of this work to the FP64 metric.
 
-The complete A kernel SASS, B kernel SASS, and object SASS accompany the article, with binary hashes and tool versions documenting provenance. This was a read-only inspection of the original object, without another GPU performance run.
+This was a read-only inspection of the original object, without another GPU performance run.
 
 ### 8.4 How many times does this chain repeat?
 
@@ -477,7 +477,7 @@ The first term is the preprocessing work that grows with modulus count, relative
 | 14 | 27.5% | 27.5% | 37.0% | 37.0% |
 | 20 | 25.9% | 25.9% | 32.6% | 32.3% |
 
-*All rows use size 8192; measured ratios come from the original stage summary. The fit reuses the same measurements to explain their variation; it is not an additional predictive validation.*
+*All rows use size 8192. The fit reuses the same measurements to explain their variation; it is not an additional predictive validation.*
 
 For fast with 14 moduli, the approximately 3 ms of work independent of modulus count is only about 5.4% of the approximately 56 ms yellow time. With two moduli, it is about 37.6% of the approximately 8 ms yellow time. Adding the work that grows with modulus count raises green/yellow from approximately 27.5% to 59.3%.
 
@@ -574,7 +574,3 @@ To explain a performance chart, we therefore need to understand **how much work 
 [5] NVIDIA. [CUDA Binary Utilities](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html). Online documentation. Accessed October 1, 2026.
 
 [6] NVIDIA. [CUDA Math API Reference Manual](https://docs.nvidia.com/cuda/cuda-math-api/index.html). Online documentation. Accessed October 1, 2026.
-
-[7] H20 Ozaki II reproduction data. Dataset accompanying this article, October 1, 2026. Stage timings, operation breakdown, split perturbation, and hardware counters.
-
-[8] GEMMul8 SM90 disassembly and version records. Experimental material accompanying this article, October 1, 2026. SASS, disassembly provenance and binary hashes, and implementation version.
