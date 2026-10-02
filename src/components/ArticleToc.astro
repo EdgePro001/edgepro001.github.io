@@ -1,0 +1,195 @@
+---
+interface Props {
+  headings: { depth: number; slug: string; text: string }[];
+  lang: "zh" | "en";
+}
+
+const { headings, lang } = Astro.props;
+const entries = headings.filter(({ depth }) => depth === 2 || depth === 3);
+const label = lang === "zh" ? "目录" : "On this page";
+---
+
+<aside class="article-toc" data-article-toc>
+  <details open>
+    <summary>{label}</summary>
+    <nav aria-label={label}>
+      <ol>
+        {entries.map((heading) => (
+          <li class:list={{ "toc-subsection": heading.depth === 3, "toc-part": heading.text.startsWith("Part ") }}>
+            <a href={`#${heading.slug}`} title={heading.text}>
+              {heading.text.startsWith("Part ") ? heading.text.match(/^Part I{1,2}\b/)?.[0] ?? heading.text : heading.text}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  </details>
+</aside>
+
+<script>
+  const toc = document.querySelector<HTMLElement>("[data-article-toc]");
+  if (toc) {
+    const details = toc.querySelector("details")!;
+    const summary = toc.querySelector("summary")!;
+    const nav = toc.querySelector("nav")!;
+    const desktop = window.matchMedia("(min-width: 1100px)");
+    const links = Array.from(toc.querySelectorAll<HTMLAnchorElement>("a[href^='#']"));
+    const entries = links.flatMap((link) => {
+      const heading = document.getElementById(decodeURIComponent(link.hash.slice(1)));
+      return heading ? [{ link, heading }] : [];
+    });
+
+    function syncLayout() {
+      details.open = desktop.matches;
+      summary.tabIndex = desktop.matches ? -1 : 0;
+    }
+    syncLayout();
+    desktop.addEventListener("change", syncLayout);
+    details.addEventListener("toggle", () => {
+      if (desktop.matches && !details.open) details.open = true;
+    });
+    links.forEach((link) => link.addEventListener("click", () => {
+      if (!desktop.matches) details.open = false;
+    }));
+
+    let active: HTMLAnchorElement | undefined;
+    function updateActive() {
+      let current: (typeof entries)[number] | undefined = entries[0];
+      for (const entry of entries) {
+        if (entry.heading.getBoundingClientRect().top <= 130) current = entry;
+        else break;
+      }
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2) {
+        current = entries.at(-1);
+      }
+      if (!current || current.link === active) return;
+      active?.removeAttribute("aria-current");
+      active = current.link;
+      active.setAttribute("aria-current", "location");
+      if (desktop.matches) {
+        const itemBox = active.getBoundingClientRect();
+        const navBox = nav.getBoundingClientRect();
+        if (itemBox.top < navBox.top || itemBox.bottom > navBox.bottom) {
+          nav.scrollTop += itemBox.top - navBox.top - nav.clientHeight / 3;
+        }
+      }
+    }
+    let pending = false;
+    function scheduleUpdate() {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        updateActive();
+      });
+    }
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    window.addEventListener("load", scheduleUpdate);
+    updateActive();
+  }
+</script>
+
+<style>
+  .article-toc {
+    position: sticky;
+    top: 50px;
+    z-index: 3;
+    align-self: start;
+    background: var(--background);
+    color: var(--secondary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  summary {
+    cursor: pointer;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--quiet-line);
+    color: var(--text);
+    font-weight: 600;
+    list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; float: right; }
+  details[open] > summary::after { content: "−"; }
+  nav {
+    max-height: 60vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    padding: 12px 8px 12px 0;
+    border-bottom: 1px solid var(--quiet-line);
+  }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li { margin: 0; padding: 0; }
+  a {
+    display: block;
+    padding: 5px 10px;
+    border: 0;
+    border-left: 2px solid var(--quiet-line);
+    color: var(--secondary);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  a:hover, a[aria-current="location"] {
+    color: var(--technical);
+    border-left-color: var(--technical);
+    background: var(--note-bg);
+  }
+  a[aria-current="location"] { font-weight: 600; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--technical);
+    outline-offset: 2px;
+  }
+  .toc-subsection a { padding-left: 22px; font-size: 12px; }
+  .toc-part { margin-top: 12px; }
+  .toc-part a { font-weight: 650; color: var(--text); }
+
+  :global(.article-shell--with-toc) {
+    width: min(650px, calc(100% - 40px));
+    margin: 0 auto;
+    padding-top: 56px;
+  }
+  :global(.article-shell--with-toc .container) {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding-top: 24px;
+  }
+  :global(.article-shell--with-toc .post h2),
+  :global(.article-shell--with-toc .post h3) { scroll-margin-top: 110px; }
+  :global(body:has(.article-toc)::before),
+  :global(body:has(.article-toc) .page-mark) { display: none; }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(html:has(.article-toc)) { scroll-behavior: smooth; }
+  }
+  @media (min-width: 1100px) {
+    :global(.article-shell--with-toc) {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 900px);
+      gap: 48px;
+      width: min(1178px, calc(100% - 64px));
+      padding-top: 82px;
+    }
+    :global(.article-shell--with-toc .container) { padding-top: 0; }
+    :global(.article-shell--with-toc .post img),
+    :global(.article-shell--with-toc .post p:has(> img + img)) {
+      width: 100%;
+      max-width: 100%;
+      margin-left: 0;
+      transform: none;
+    }
+    .article-toc { top: 76px; }
+    summary { cursor: default; pointer-events: none; padding-top: 0; }
+    summary::after { display: none; }
+    nav { max-height: calc(100dvh - 140px); border-bottom: 0; }
+  }
+  @media (max-width: 480px) {
+    :global(.article-shell--with-toc) { width: calc(100% - 32px); padding-top: 48px; }
+  }
+  @media print {
+    .article-toc { display: none; }
+    :global(.article-shell--with-toc) { display: block; width: 100%; padding-top: 0; }
+  }
+</style>

@@ -1,5 +1,6 @@
 ---
 import { getCollection, render } from "astro:content";
+import ArticleToc from "../../components/ArticleToc.astro";
 import "katex/dist/katex.min.css";
 
 export async function getStaticPaths() {
@@ -13,10 +14,11 @@ export async function getStaticPaths() {
 }
 
 const { post } = Astro.props;
-const { Content } = await render(post);
+const { Content, headings } = await render(post);
 const includeDrafts = import.meta.env.DEV;
 const allPosts = (await getCollection("blog")).filter((entry) => includeDrafts || !entry.data.draft);
 const translationKey = post.data.translationKey ?? post.id;
+const showToc = translationKey === "ozaki-ii";
 const viewKey = `/blog/${translationKey}`;
 const translations = allPosts.filter(
   (entry) =>
@@ -57,6 +59,8 @@ const formatDate = (date: Date) =>
   </head>
   <body>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
+    <div class:list={["article-shell", { "article-shell--with-toc": showToc }]}>
+    {showToc && <ArticleToc headings={headings} lang={post.data.lang} />}
     <main class="container post" aria-label={post.data.title}>
       <p>
         <a href="/">Junxian Ma</a> / <a href="/blog/">Writings</a>
@@ -73,6 +77,7 @@ const formatDate = (date: Date) =>
 
       <Content />
     </main>
+    </div>
 
     {variants.length > 1 && (
       <nav class="language-switch language-switch--floating" aria-label="Article language">
