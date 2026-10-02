@@ -135,7 +135,7 @@ accu
   Scale/truncate original A and B → s residues
 ```
 
-> Note: Input generation, workspace allocation, and host-to-device transfers are outside our green timings. [Historical `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp)<sup class="citation"><a href="#ref-2" aria-label="Reference 2" title="GEMMul8">[2]</a></sup>
+> Note: Input generation, workspace allocation, and host-to-device transfers are outside our green timings. [Historical `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8/src/scaling.hpp)<sup class="citation"><a href="#ref-2" aria-label="Reference 2" title="GEMMul8">[2]</a></sup>
 
 ### 5.2 A detailed timing breakdown of preprocessing
 
@@ -274,7 +274,7 @@ The four constant-table fields have the following meanings:
 | `val.z` | FP32 | $-m$ |
 | `val.w` | FP32 | Precomputed approximate reciprocal $\alpha_{32}\approx1/m$ |
 
-The reciprocals are stored in GPU constant memory, allowing each reduction to estimate the quotient through multiplication. See [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp#L155) and the [modulus table](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/table.hpp#L26)<sup class="citation"><a href="#ref-2" aria-label="Reference 2" title="GEMMul8">[2]</a></sup>.
+The reciprocals are stored in GPU constant memory, allowing each reduction to estimate the quotient through multiplication. See [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8/src/scaling.hpp#L155) and the [modulus table](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8/src/table.hpp#L26)<sup class="citation"><a href="#ref-2" aria-label="Reference 2" title="GEMMul8">[2]</a></sup>.
 
 ### 8.2 Three reduction passes for remainder calculation and correction
 
@@ -565,7 +565,7 @@ To explain a performance chart, we therefore need to understand **how much work 
 
 <span id="ref-1" class="reference-anchor">[1]</span> K. Ozaki, Y. Uchino, and T. Imamura. [Ozaki Scheme II: A GEMM-oriented emulation of floating-point matrix multiplication using an integer modular technique](https://arxiv.org/abs/2504.08009v4). arXiv:2504.08009v4, 2026.
 
-<span id="ref-2" class="reference-anchor">[2]</span> RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a). Source code, commit `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`, April 9, 2025.
+<span id="ref-2" class="reference-anchor">[2]</span> RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8). Source code, commit `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`, April 9, 2025.
 
 <span id="ref-3" class="reference-anchor">[3]</span> M. Andersch et al. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/). NVIDIA Technical Blog, March 22, 2022.
 

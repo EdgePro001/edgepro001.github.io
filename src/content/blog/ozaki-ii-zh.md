@@ -131,7 +131,7 @@ accu
   原 A/B 缩放截断 → s 路余数
 ```
 
-> 注释：输入生成、工作区分配、主机到设备传输不在本次绿色计时内。[历史实现 `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp)<sup class="citation"><a href="#ref-2" aria-label="参考文献 2" title="GEMMul8">[2]</a></sup>
+> 注释：输入生成、工作区分配、主机到设备传输不在本次绿色计时内。[历史实现 `scaling.hpp`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8/src/scaling.hpp)<sup class="citation"><a href="#ref-2" aria-label="参考文献 2" title="GEMMul8">[2]</a></sup>
 
 ### 5.2 对预处理的细致拆分计时
 
@@ -263,7 +263,7 @@ return static_cast<int8_t>(tmp);
 | `val.z` | FP32 | $-m$ |
 | `val.w` | FP32 | 预先计算的近似倒数 $\alpha_{32}\approx1/m$ |
 
-倒数预先存入 GPU 常量内存，每次取余通过乘法估计商。源代码见 [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/scaling.hpp#L155) 和[模数常量表](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/src/table.hpp#L26)<sup class="citation"><a href="#ref-2" aria-label="参考文献 2" title="GEMMul8">[2]</a></sup>。
+倒数预先存入 GPU 常量内存，每次取余通过乘法估计商。源代码见 [`mod_8i<double>`](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8/src/scaling.hpp#L155) 和[模数常量表](https://github.com/RIKEN-RCCS/GEMMul8/blob/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8/src/table.hpp#L26)<sup class="citation"><a href="#ref-2" aria-label="参考文献 2" title="GEMMul8">[2]</a></sup>。
 
 ### 8.2 三轮归约进行取余和修正
 
@@ -553,7 +553,7 @@ Ozaki II 展示了一个很具体的算法与硬件协同设计思路：用多�
 
 <span id="ref-1" class="reference-anchor">[1]</span> K. Ozaki, Y. Uchino, and T. Imamura. [Ozaki Scheme II: A GEMM-oriented emulation of floating-point matrix multiplication using an integer modular technique](https://arxiv.org/abs/2504.08009v4). arXiv:2504.08009v4, 2026.
 
-<span id="ref-2" class="reference-anchor">[2]</span> RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a). 软件源代码，提交 `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`，2025-04-09.
+<span id="ref-2" class="reference-anchor">[2]</span> RIKEN Center for Computational Science. [GEMMul8](https://github.com/RIKEN-RCCS/GEMMul8/tree/d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a/GEMMul8). 软件源代码，提交 `d3ffd5f52e89bdc5338ebff6ba1deccc02b5935a`，2025-04-09.
 
 <span id="ref-3" class="reference-anchor">[3]</span> M. Andersch et al. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/). NVIDIA Technical Blog, 2022-03-22.
 
