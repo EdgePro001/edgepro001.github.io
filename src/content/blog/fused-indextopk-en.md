@@ -18,9 +18,9 @@ category: technical
 ## TL;DR
 
 - This post describes an attempt to write a fused operator for DeepSeek-V3.2's Indexer on H20. The Indexer scores every history token and keeps the 2048 highest; the usual implementation writes the full score matrix to device memory and reads it back to select. We do the scoring and the selection in one kernel, with exactly the same result (exact top-k).
-- **Most of the gain comes from running scoring and selection at the same time, not from moving less data.** On H20 the scoring itself is compute-bound, and writing and reading the score matrix is only about 2.7% of the unfused time. Our first fused version was actually slower than the unfused one, because scoring stopped to wait for selection; only after double buffering let the two alternate did it clearly beat the unfused pipeline.
+- **The gain comes from two sources: scoring and selection now overlap, and the score matrix no longer goes through device memory.** On H20 the scoring itself is compute-bound, so the saved write and read-back of the score matrix is about 2.7% of the unfused time at 128K; the larger part comes from overlap. Our first fused version already removed that traffic, yet it was slower than the unfused one because scoring stopped to wait for selection; only after double buffering let the two run at the same time did it clearly beat the unfused pipeline.
 - **At long context, the operator is close to H20's compute limit.** At 160K the main kernel reaches 95.2% of FP8 peak, and deleting all selection work would make it only 0.31% faster. Short contexts and very few queries still leave room.
-- **The operator is faster, but the gain in the full model is modest.** On real inputs it is 1.04× to 1.16× faster than DeepGEMM + DeepSelect; inside vLLM, time to first token for a 128K input drops by 1.64%, because the Indexer is only part of the total time.
+- **In the full model, time to first token (TTFT) drops as well, and more so for longer inputs.** Replacing only the prefill Indexer inside vLLM lowers TTFT by 0.19% at 16K and 1.64% at 128K, the same order of magnitude as "Indexer share × operator saving". The operator itself is 1.04× to 1.16× faster than DeepGEMM + DeepSelect on real inputs.
 
 ## 1 Introduction
 
