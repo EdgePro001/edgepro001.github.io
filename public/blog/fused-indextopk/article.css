@@ -1,0 +1,5 @@
+/* Only loaded by the FusedIndexTopK article. Text-heavy tables wrap instead of scrolling. */
+.post table { white-space: normal; }
+.post td:first-child, .post th:first-child { white-space: nowrap; }
+.post td, .post th { vertical-align: top; }
+.post table + p > em:only-child, .post p:has(> img) + p > em:only-child { color: var(--secondary); font-size: 0.9em; }
