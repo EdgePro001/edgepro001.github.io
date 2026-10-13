@@ -18,7 +18,7 @@ const { Content, headings } = await render(post);
 const includeDrafts = import.meta.env.DEV;
 const allPosts = (await getCollection("blog")).filter((entry) => includeDrafts || !entry.data.draft);
 const translationKey = post.data.translationKey ?? post.id;
-const showToc = translationKey === "ozaki-ii";
+const showToc = ["ozaki-ii", "fused-indextopk"].includes(translationKey);
 const viewKey = `/blog/${translationKey}`;
 const translations = allPosts.filter(
   (entry) =>

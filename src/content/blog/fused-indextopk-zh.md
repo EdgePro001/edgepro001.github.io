@@ -15,17 +15,13 @@ category: technical
 > 代码：[EdgePro001/FusedIndexTopK](https://github.com/EdgePro001/FusedIndexTopK)（本文测量的是 [v0.3.0](https://github.com/EdgePro001/FusedIndexTopK/releases/tag/v0.3.0)，commit `05b44daa`）。
 > 本文只覆盖 prefill 侧的算子工作。文中数字都来自原始实验结果，并由脚本逐项核对过。
 
-## 摘要
+## TL;DR
 
-DeepSeek-V3.2 的稀疏注意力（DSA）让主注意力只访问每个 query 的 Top-2048 个历史 token，但选出这些 token 的 Indexer 仍要给全部合法历史打分，再做 TopK。在 6 张 H20 上用真实语料测得：完整输入从 8K 增长到约 160K 时，Indexer 的打分与 TopK 在非通信 GPU kernel 累计时间中的占比从 5.42% 增至 49.79%。常规实现先把 $[Q, N]$ 的 FP32 分数矩阵写进显存，再由独立 kernel 读回做 TopK。
-
-我们实现了一个融合算子：在打分 kernel 的 epilogue 里按采样阈值筛选候选，候选留在 SMEM，由同一个 CTA 里的 TopK warp 做精确选择，并用双缓冲让选择与下一批打分重叠。全程保持逐行精确的 TopK 语义：快路径带数量证书，失败时走精确 repair。
-
-主要结果（H20-3e，B=1，64 head，dim 128，K=2048）：
-
-- **算子**：真实激活、CUDA Graph 计时下，Q4096 的 120 组输入全部快于未融合方案 DeepGEMM + DeepSelect。按长度为 1.04×～1.16×，几何平均 1.086×。
-- **离天花板多远**：完整算子达到 FP8 规格峰值的 88%～92%。删掉全部选择工作，主 kernel 只快 0.31%；Q4096 时主 kernel 达峰值的 89%～95%，长度越长越高。
-- **端到端**：同一个 vLLM 进程里只替换 prefill Indexer，16K～128K 的 TTFT 降低 0.2%～1.6%（128K 为 1.64%），与"Indexer 占比 × 算子节省"的估算同一量级。
+- DeepSeek-V3.2 的 Indexer 要给全部历史 token 打分再做 TopK，长上下文下它占到非通信 GPU 工作量的近一半（约 160K 时为 49.79%）。常规实现先把完整分数矩阵写进显存，再由独立 kernel 读回做选择。本文尝试在 H20 上把打分和精确 TopK 融合进同一个 kernel，并一路追问：收益从哪来，离天花板还有多远。
+- **融合的价值在重叠，不在省带宽。** Indexer 打分在 H20 上受限于算力（约 124 FLOP/B，高于拐点 62），写出再读回分数矩阵只占未融合耗时的约 2.7%。第一版片上融合因为 Math 要等 TopK，反而比未融合方案还慢（147 对 176 TFLOPS）；加上双缓冲让选择与下一批打分重叠后，一步跳到 251。
+- **先让 TopK 跟得上，再谈融合。** 用采样阈值把"在线维护候选"改成"全行筛选 + 小集合 radix 精确选择"，再用数量证书判断快路径是否成立，失败就走精确 repair。采样只影响快慢，不影响结果是否精确。
+- **长历史下，选择几乎完全藏进了流水线。** 删掉全部选择工作，主 kernel 只快 0.31%；Q4096 时主 kernel 达到 FP8 峰值的 89%～95%，完整算子为 88%～92%。剩下的边界是短历史（矩阵计算盖不住选择）和小 Q（SM 吃不满）。
+- **收益在整模型里站得住，但量级有限。** 真实激活上，Q4096 的 120 组输入全部快于 DeepGEMM + DeepSelect（1.04×～1.16×）；在 vLLM 中只替换 prefill Indexer，128K 的 TTFT 降低 1.64%，与"Indexer 占比 × 算子节省"的估算同一量级。
 
 ## 1 引言
 

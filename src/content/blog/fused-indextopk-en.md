@@ -15,17 +15,13 @@ category: technical
 > Code: [EdgePro001/FusedIndexTopK](https://github.com/EdgePro001/FusedIndexTopK) (measurements use [v0.3.0](https://github.com/EdgePro001/FusedIndexTopK/releases/tag/v0.3.0), commit `05b44daa`).
 > This post covers only the prefill-side operator work. Every number comes from raw experimental results and was checked by a script.
 
-## Abstract
+## TL;DR
 
-DeepSeek-V3.2's sparse attention (DSA) lets the main attention read only the top-2048 history tokens of each query, but the Indexer that picks those tokens still scores every valid history token and then runs a top-k. On 6 H20 GPUs with a real corpus, the Indexer's scoring and top-k grow from 5.42% to 49.79% of cumulative non-communication GPU kernel time as the full input grows from 8K to about 160K tokens. The usual implementation writes the $[Q, N]$ FP32 score matrix to device memory and reads it back in a separate top-k kernel.
-
-We built a fused operator. The epilogue of the scoring kernel filters candidates against a sampled threshold; candidates stay in SMEM; TopK warps in the same CTA perform the exact selection; and double buffering overlaps selection with the next batch of scoring. Exact per-row top-k semantics are kept throughout: the fast path carries a count certificate, and any failure falls back to an exact repair.
-
-Main results (H20-3e, B=1, 64 heads, dim 128, K=2048):
-
-- **Operator**: on real activations with CUDA Graph timing, all 120 Q4096 inputs are faster than the unfused DeepGEMM + DeepSelect pipeline: 1.04× to 1.16× by length, 1.086× geometric mean.
-- **Distance to the ceiling**: the complete operator reaches 88%–92% of the FP8 spec peak. Deleting all selection work speeds the main kernel up by only 0.31%; at Q4096 the main kernel reaches 89%–95% of peak, rising with length.
-- **End to end**: replacing only the prefill Indexer inside one vLLM process lowers TTFT by 0.2%–1.6% from 16K to 128K (1.64% at 128K), the same order of magnitude as "Indexer share × operator saving".
+- DeepSeek-V3.2's Indexer scores every history token and then runs a top-k; at long context it accounts for nearly half of non-communication GPU work (49.79% at about 160K). The usual implementation writes the full score matrix to device memory and reads it back in a separate kernel. This article fuses scoring and exact top-k into one kernel on H20 and keeps asking where the gain comes from and how far it is from the ceiling.
+- **The value of fusion is overlap, not bandwidth.** On H20, Indexer scoring is compute-bound (about 124 FLOP/B, above the ridge at 62), and writing plus re-reading the score matrix is only about 2.7% of the unfused time. The first on-chip fusion was even slower than the unfused pipeline (147 vs 176 TFLOPS) because Math waited for TopK; once double buffering overlapped selection with the next batch of scoring, it jumped to 251.
+- **Make top-k keep up before fusing.** A sampled threshold turns "maintain candidates online" into "filter the full row + exact radix selection over a small set", and a count certificate decides whether the fast path holds, with exact repair otherwise. Sampling affects only speed, never exactness.
+- **At long histories, selection is almost entirely hidden in the pipeline.** Removing all selection work speeds the main kernel up by only 0.31%; at Q4096 the main kernel reaches 89%–95% of FP8 peak and the complete operator 88%–92%. The remaining limits are short histories (matrix work cannot cover selection) and small Q (the SMs are underused).
+- **The gain holds in the full model, but its size is bounded.** On real activations all 120 Q4096 inputs beat DeepGEMM + DeepSelect (1.04× to 1.16×); replacing only the prefill Indexer in vLLM cuts 128K TTFT by 1.64%, the same order of magnitude as "Indexer share × operator saving".
 
 ## 1 Introduction
 
