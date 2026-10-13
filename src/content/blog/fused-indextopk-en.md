@@ -17,11 +17,10 @@ category: technical
 
 ## TL;DR
 
-- DeepSeek-V3.2's Indexer scores every history token and then runs a top-k; at long context it accounts for nearly half of non-communication GPU work (49.79% at about 160K). The usual implementation writes the full score matrix to device memory and reads it back in a separate kernel. This article fuses scoring and exact top-k into one kernel on H20 and keeps asking where the gain comes from and how far it is from the ceiling.
-- **The value of fusion is overlap, not bandwidth.** On H20, Indexer scoring is compute-bound (about 124 FLOP/B, above the ridge at 62), and writing plus re-reading the score matrix is only about 2.7% of the unfused time. The first on-chip fusion was even slower than the unfused pipeline (147 vs 176 TFLOPS) because Math waited for TopK; once double buffering overlapped selection with the next batch of scoring, it jumped to 251.
-- **Make top-k keep up before fusing.** A sampled threshold turns "maintain candidates online" into "filter the full row + exact radix selection over a small set", and a count certificate decides whether the fast path holds, with exact repair otherwise. Sampling affects only speed, never exactness.
-- **At long histories, selection is almost entirely hidden in the pipeline.** Removing all selection work speeds the main kernel up by only 0.31%; at Q4096 the main kernel reaches 89%–95% of FP8 peak and the complete operator 88%–92%. The remaining limits are short histories (matrix work cannot cover selection) and small Q (the SMs are underused).
-- **The gain holds in the full model, but its size is bounded.** On real activations all 120 Q4096 inputs beat DeepGEMM + DeepSelect (1.04× to 1.16×); replacing only the prefill Indexer in vLLM cuts 128K TTFT by 1.64%, the same order of magnitude as "Indexer share × operator saving".
+- This post describes an attempt to write a fused operator for DeepSeek-V3.2's Indexer on H20. The Indexer scores every history token and keeps the 2048 highest; the usual implementation writes the full score matrix to device memory and reads it back to select. We do the scoring and the selection in one kernel, with exactly the same result (exact top-k).
+- **Most of the gain comes from running scoring and selection at the same time, not from moving less data.** On H20 the scoring itself is compute-bound, and writing and reading the score matrix is only about 2.7% of the unfused time. Our first fused version was actually slower than the unfused one, because scoring stopped to wait for selection; only after double buffering let the two alternate did it clearly beat the unfused pipeline.
+- **At long context, the operator is close to H20's compute limit.** At 160K the main kernel reaches 95.2% of FP8 peak, and deleting all selection work would make it only 0.31% faster. Short contexts and very few queries still leave room.
+- **The operator is faster, but the gain in the full model is modest.** On real inputs it is 1.04× to 1.16× faster than DeepGEMM + DeepSelect; inside vLLM, time to first token for a 128K input drops by 1.64%, because the Indexer is only part of the total time.
 
 ## 1 Introduction
 
