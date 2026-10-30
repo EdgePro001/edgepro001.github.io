@@ -1,5 +1,5 @@
 ---
-title: "From Push to Pull: Why Mega MoE Reverses DeepEP's Dispatch"
+title: "From Push to Pull: A Brief Analysis of the Communication Schemes in DeepGEMM Mega MoE and DeepEP"
 description: "DeepEP pushes, Mega MoE pulls. Starting from whether the writer knows the final address, a comparison of the two: five constraints, from scatter to gather, and how the SMs divide the work."
 date: 2026-10-30
 draft: false

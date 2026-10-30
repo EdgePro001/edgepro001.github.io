@@ -1,5 +1,5 @@
 ---
-title: "从推到拉：为什么 Mega MoE 把 DeepEP 的 dispatch 反了过来"
+title: "“推拉”之间：DeepGEMM Mega MoE 和 DeepEP 通信方案简析"
 description: "同一件事，DeepEP 推、Mega MoE 拉。从“写方知不知道最终地址”出发，比较两者的异同：五个约束、从 scatter 到 gather、以及 SM 怎么分工。"
 date: 2026-10-30
 draft: false
