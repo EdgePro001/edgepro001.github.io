@@ -23,6 +23,13 @@ While reading the source I noticed one detail: **in DeepEP's dispatch, the sende
 
 > This post is based on the DeepGEMM and DeepEP source code and covers the SM100 implementation of Mega MoE. Examples use the DeepSeek V4.1-Flash shape: 256 routed experts, 6 picked per token, expert parallelism across 8 GPUs.
 
+## TL;DR
+
+- **Same job, two approaches.** In DeepEP's dispatch, the sender pushes tokens over and they are reordered on arrival. In Mega MoE, the receiver first exchanges counts, then pulls each token straight to where the matrix multiplication will read it. Both push in combine.
+- **Why only dispatch flips: does the writer know the final address at the moment it writes?** In combine, the address traveled with the token, so it pushes. In dispatch, the final position can only be computed once every GPU's counts are in. DeepEP doesn't wait, pushing first and reordering later; Mega MoE waits, then pulls each token straight into place.
+- **Pulling turns scatter into gather.** The pull walks the matrix in row order, so low blocks fill first and the GEMM can start while the pull is still going. This only pays off when communication and computation share one kernel, which is exactly why DeepEP doesn't do it.
+- **Mega MoE pays a little so data lands in place:** an extra count exchange, about 1.35× the NVLink traffic, and NVLink-domain only. In return, data arrives exactly where the computation reads it.
+
 ## 1. What the two have in common
 
 **DeepEP + DeepGEMM** runs several kernels one after another:

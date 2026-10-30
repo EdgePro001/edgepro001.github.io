@@ -23,6 +23,13 @@ DeepSeek 为这件事写了两套实现：
 
 > 本文基于 DeepGEMM 和 DeepEP 的源码，讨论 Mega MoE 的 SM100 实现。举例时取 DeepSeek V4.1-Flash 的形状：256 个路由专家，每个 token 选 6 个，8 卡专家并行。
 
+## TL;DR
+
+- **同一件事，两种做法。** DeepEP 的 dispatch 是发送方把 token 推过去，到了再重排；Mega MoE 是接收方先交换计数，再把 token 直接拉到矩阵乘要读的位置。combine 两边都是推。
+- **为什么只有 dispatch 反了：看写的那一刻，写方知不知道最终地址。** combine 的地址早已随 token 带到，所以推。dispatch 的最终位置要等所有卡的计数到齐才能算出：DeepEP 选择不等，先推后重排；Mega MoE 选择先等，再直接拉到位。
+- **拉的本质是从 scatter 变成 gather。** 拉取按矩阵的行号依次进行，行号小的块先满，矩阵乘可以边拉边算。但这只在通信和计算处于同一个 kernel 时才有价值，这正是 DeepEP 不这样做的原因。
+- **Mega MoE 用一点代价，换数据“直接落位”：** 多一段计数交换，多约 1.35 倍的 NVLink 流量，只能在 NVLink 域内使用；换来的是数据一到就落在计算要读的位置。
+
 ## 一、相同之处：两者都在做什么
 
 **DeepEP + DeepGEMM** 用几个 kernel 依次完成：
