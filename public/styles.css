@@ -75,6 +75,52 @@ body::before {
   user-select: none;
 }
 
+.blog-topbar {
+  position: fixed;
+  z-index: 10;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 56px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--quiet-line);
+  background: var(--background);
+}
+
+.blog-topbar__nav {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  height: 100%;
+  gap: 0.5em;
+  white-space: nowrap;
+}
+
+.blog-topbar__nav a {
+  border-bottom: 0;
+}
+
+.blog-topbar__brand {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.blog-topbar__separator,
+.blog-topbar__section {
+  color: var(--secondary);
+}
+
+.blog-topbar__nav a:hover,
+.blog-topbar__nav a:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
+.blog-topbar__nav a:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.22em;
+}
+
 .container {
   width: min(650px, calc(100% - 40px));
   margin: 0 auto;
@@ -262,7 +308,7 @@ li::marker {
 
 .language-switch--floating {
   position: fixed;
-  z-index: 2;
+  z-index: 11;
   top: 14px;
   right: 84px;
   margin: 0;
@@ -345,6 +391,7 @@ li::marker {
 
 .theme-toggle {
   position: fixed;
+  z-index: 11;
   top: 18px;
   right: 22px;
   padding: 3px 0;
@@ -451,6 +498,11 @@ li::marker {
     line-height: 1.5;
   }
 
+  .blog-topbar + .page-mark + .container,
+  .blog-topbar + .page-mark + .article-shell:not(.article-shell--with-toc) .container {
+    padding-top: 72px;
+  }
+
   .container {
     width: min(100% - 40px, 650px);
     padding-top: 44px;
@@ -472,6 +524,21 @@ li::marker {
 }
 
 @media (max-width: 480px) {
+  .blog-topbar {
+    height: 44px;
+    padding: 0 14px;
+  }
+
+  .blog-topbar + .page-mark + .container,
+  .blog-topbar + .page-mark + .article-shell:not(.article-shell--with-toc) .container {
+    padding-top: 60px;
+  }
+
+  .blog-topbar__separator,
+  .blog-topbar__section {
+    display: none;
+  }
+
   .container {
     width: min(100% - 32px, 650px);
     padding-top: 34px;

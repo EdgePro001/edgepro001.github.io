@@ -41,15 +41,18 @@ const categoryLabel = (category: "technical" | "reflection") =>
     <meta name="description" content="Writings by Junxian Ma.">
     <title>Writings - Junxian Ma</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=14">
+    <link rel="stylesheet" href="/styles.css?v=16">
   </head>
   <body>
+    <header class="blog-topbar">
+      <nav class="blog-topbar__nav" aria-label="Blog navigation">
+        <a class="blog-topbar__brand" href="/">Junxian Ma</a>
+        <span class="blog-topbar__separator" aria-hidden="true">/</span>
+        <a class="blog-topbar__section" href="/blog/" aria-current="page">Writings</a>
+      </nav>
+    </header>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
     <main class="container" aria-label="Writings by Junxian Ma">
-      <p>
-        <a href="/">Junxian Ma</a> / Writings
-      </p>
-
       {postGroups.length > 0 ? (
         <ul class="post-list">
           {postGroups.map(({ date, primary }) => (

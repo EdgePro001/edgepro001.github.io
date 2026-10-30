@@ -55,17 +55,20 @@ const formatDate = (date: Date) =>
       />
     ))}
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css?v=15">
+    <link rel="stylesheet" href="/styles.css?v=16">
   </head>
   <body>
+    <header class="blog-topbar">
+      <nav class="blog-topbar__nav" aria-label="Blog navigation">
+        <a class="blog-topbar__brand" href="/">Junxian Ma</a>
+        <span class="blog-topbar__separator" aria-hidden="true">/</span>
+        <a class="blog-topbar__section" href="/blog/">Writings</a>
+      </nav>
+    </header>
     <img class="page-mark" src="/edge-mark.svg" alt="" aria-hidden="true">
     <div class:list={["article-shell", { "article-shell--with-toc": showToc }]}>
     {showToc && <ArticleToc headings={headings} lang={post.data.lang} />}
     <main class="container post" aria-label={post.data.title}>
-      <p>
-        <a href="/">Junxian Ma</a> / <a href="/blog/">Writings</a>
-      </p>
-
       <header class="post-header">
         <h1>{post.data.title}</h1>
         <p class="muted">
