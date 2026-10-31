@@ -21,7 +21,7 @@ DeepSeek 为这件事写了两套实现：
 
 两者之间有一个容易被忽略的差别：**DeepEP 的 dispatch 是发送方把数据推过去，Mega MoE 是接收方把数据拉过来；但 combine 两边都是推。** 本文从这一差别出发，比较两套实现的异同，并回答它们为什么不同。
 
-> 本文基于 DeepGEMM 和 DeepEP 的源码，讨论 Mega MoE 的 SM100 实现。举例时取 DeepSeek V4.1-Flash 的形状：256 个路由专家，每个 token 选 6 个，8 卡专家并行。
+> 本文基于 DeepGEMM 和 DeepEP 的源码，讨论 Mega MoE 的 SM100 实现。举例时取 DeepSeek V4.1-Flash 的形状：384 个路由专家，每个 token 选 6 个，hidden 5120，8 卡专家并行。
 
 ## TL;DR
 
@@ -123,7 +123,7 @@ DeepSeek 为这件事写了两套实现：
 - 都要先交换计数，再做跨卡同步；
 - **combine 都是推。**
 
-有一处细节不同：发送的粒度。一个 token 选中的 6 个专家里，可能有几个在同一张卡上。DeepEP 按卡去重，同一张卡只发一份，到了再展开（[源码](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/dispatch.cuh#L102-L104)）。Mega MoE 不去重，每个“token–专家”对各占一行，同一张卡上的两个专家会把这个 token 拉两次（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L383-L390)）。按均匀路由算，DeepEP 平均每个 token 发 4.44 份，Mega MoE 发 6 份，Mega MoE 多用了约 1.35 倍的 NVLink 流量。后面会看到，这是 Mega MoE 为了让数据一到达就能参与计算而付出的代价之一。
+有一处细节不同：发送的粒度。一个 token 选中的 6 个专家里，可能有几个在同一张卡上。DeepEP 按卡去重，同一张卡只发一份，到了再展开（[源码](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/dispatch.cuh#L102-L104)）。Mega MoE 不去重，每个“token–专家”对各占一行，同一张卡上的两个专家会把这个 token 拉两次（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L383-L390)）。按均匀路由算，DeepEP 平均每个 token 发 4.43 份，Mega MoE 发 6 份，Mega MoE 多用了约 1.35 倍的 NVLink 流量。后面会看到，这是 Mega MoE 为了让数据一到达就能参与计算而付出的代价之一。
 
 ## 二、不同之一：推与拉
 
@@ -251,7 +251,7 @@ gather 有一个前提：要能从输出的位置反推出输入在哪里。第�
 
 **寄存器**：拉取 warp 每个线程 48 个，GEMM 相关 warp 40 个，收尾 warp 208 个（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L328-L331)）。加起来 128×48 + 128×40 + 256×208 = 64512，恰好用满整个寄存器堆（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L332-L335)）。
 
-**共享内存**：拉取要占约 17 KB，包括专家计数 1 KB 和 4 个 warp 各 4 KB 的中转缓冲。而 GEMM 每多一级流水大约要 19.5 KB（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/csrc/jit_kernels/heuristics/mega_moe.hpp#L179-L184)，按 BLOCK_M = 32 算），所以拉取大约占掉了一级流水。
+**共享内存**：拉取要占约 22 KB，包括专家计数 2 KB 和 4 个 warp 各 5 KB 的中转缓冲。而 GEMM 每多一级流水大约要 19 KB（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/csrc/jit_kernels/heuristics/mega_moe.hpp#L179-L184)，按 BLOCK_M = 32 算），所以拉取大约占掉了一级流水。
 
 也就是说，Mega MoE 只给拉取留了最少的资源，把每个 SM 的大部分留给矩阵乘和收尾。这样做行得通，是因为拉取主要靠 TMA 硬件完成，本身几乎不需要计算。
 

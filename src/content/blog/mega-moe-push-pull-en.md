@@ -21,7 +21,7 @@ DeepSeek has two implementations of this:
 
 One difference between the two is easy to miss: **in DeepEP's dispatch, the sender pushes the data over; in Mega MoE, the receiver pulls it. Yet both of them push in combine.** This post starts from that difference, compares what the two implementations share and where they differ, and asks why they differ.
 
-> This post is based on the DeepGEMM and DeepEP source code and covers the SM100 implementation of Mega MoE. Examples use the DeepSeek V4.1-Flash shape: 256 routed experts, 6 picked per token, expert parallelism across 8 GPUs.
+> This post is based on the DeepGEMM and DeepEP source code and covers the SM100 implementation of Mega MoE. Examples use the DeepSeek V4.1-Flash shape: 384 routed experts, 6 picked per token, hidden size 5120, expert parallelism across 8 GPUs.
 
 ## TL;DR
 
@@ -123,7 +123,7 @@ The two have a lot in common:
 - Both exchange counts first and then synchronize across GPUs;
 - **Both push in combine.**
 
-One detail differs: the unit of sending. Several of a token's 6 experts may sit on the same GPU. DeepEP deduplicates per GPU, sending one copy to each GPU and expanding it on arrival ([source](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/dispatch.cuh#L102-L104)). Mega MoE does not deduplicate: every token–expert pair gets its own row, so two experts on the same GPU pull the same token twice ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L383-L390)). With uniform routing, DeepEP sends 4.44 copies per token on average and Mega MoE sends 6, so Mega MoE uses about 1.35× the NVLink traffic. As we will see, this is one of the prices Mega MoE pays so that data can be computed on as soon as it lands.
+One detail differs: the unit of sending. Several of a token's 6 experts may sit on the same GPU. DeepEP deduplicates per GPU, sending one copy to each GPU and expanding it on arrival ([source](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/dispatch.cuh#L102-L104)). Mega MoE does not deduplicate: every token–expert pair gets its own row, so two experts on the same GPU pull the same token twice ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L383-L390)). With uniform routing, DeepEP sends 4.43 copies per token on average and Mega MoE sends 6, so Mega MoE uses about 1.35× the NVLink traffic. As we will see, this is one of the prices Mega MoE pays so that data can be computed on as soon as it lands.
 
 ## 2. Difference one: push versus pull
 
@@ -251,7 +251,7 @@ Note that splitting work inside the SM does not mean an SM computes the tokens i
 
 **Registers**: 48 per thread for the pull warps, 40 for the GEMM-related warps, 208 for the epilogue warps ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L328-L331)). That adds up to 128×48 + 128×40 + 256×208 = 64512, exactly filling the register file ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L332-L335)).
 
-**Shared memory**: pulling takes about 17 KB, 1 KB of expert counts plus a 4 KB staging buffer for each of the 4 warps. Each extra GEMM pipeline stage needs about 19.5 KB ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/csrc/jit_kernels/heuristics/mega_moe.hpp#L179-L184), for BLOCK_M = 32), so pulling costs roughly one pipeline stage.
+**Shared memory**: pulling takes about 22 KB, 2 KB of expert counts plus a 5 KB staging buffer for each of the 4 warps. Each extra GEMM pipeline stage needs about 19 KB ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/csrc/jit_kernels/heuristics/mega_moe.hpp#L179-L184), for BLOCK_M = 32), so pulling costs roughly one pipeline stage.
 
 In other words, Mega MoE leaves pulling with the bare minimum and gives most of each SM to the matrix multiplications and the epilogue. This works because pulling is done mostly by the TMA hardware and needs almost no computation of its own.
 
