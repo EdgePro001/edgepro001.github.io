@@ -19,7 +19,7 @@ DeepSeek has two implementations of this:
 - **DeepEP** handles only the communication. Dispatch and combine are each one kernel; the matrix multiplications in between are left to DeepGEMM.
 - **Mega MoE** (inside DeepGEMM) puts dispatch, both matrix multiplications and combine into a single kernel.
 
-While reading the source I noticed one detail: **in DeepEP's dispatch, the sender pushes the data over; in Mega MoE, the receiver pulls it. Yet both of them push in combine.** This post starts from that detail, compares what the two implementations share and where they differ, and asks why they differ.
+One difference between the two is easy to miss: **in DeepEP's dispatch, the sender pushes the data over; in Mega MoE, the receiver pulls it. Yet both of them push in combine.** This post starts from that difference, compares what the two implementations share and where they differ, and asks why they differ.
 
 > This post is based on the DeepGEMM and DeepEP source code and covers the SM100 implementation of Mega MoE. Examples use the DeepSeek V4.1-Flash shape: 256 routed experts, 6 picked per token, expert parallelism across 8 GPUs.
 
@@ -153,11 +153,11 @@ Before any data moves, Mega MoE writes two things to the destination GPU ([sourc
 
 Both are needed. Without the list, the destination does not know where to read from; without the lengths, it does not know where to stop, or whether the source has finished writing. After that, all GPUs synchronize once more before the pull begins.
 
-This is the price of pulling: before any data moves, there is an extra exchange that must finish first. According to comments in the source, the counting takes about 6.5 µs and writing the list about 2 µs ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L374-L383)).
+This is the cost of pulling: the exchange must complete serially before any data transfer begins. According to comments in the source, the counting takes about 6.5 µs and writing the list about 2 µs ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L374-L383)).
 
 ### Five constraints: why each side is right
 
-Neither design is better in general; each is sensible under its own constraints. I see five:
+Neither design is better in general; each is sensible under its own constraints, which can be summarized in five points:
 
 1. Mega MoE includes the computation, while DeepEP handles only communication;
 2. Mega MoE also has a shared expert to compute, and can compute it while waiting for counts;
@@ -178,11 +178,11 @@ Mapped to the source:
 Two notes:
 
 - **On ②**: the shared expert fills only part of this gap. The warps that post-process GEMM results (the epilogue) must first wait for dispatch to pass the first cross-GPU sync ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L977)), and TMEM, which holds matrix-multiply results, has only 2 slots ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L177)). So each SM can run at most 2 shared-expert tasks during the gap before it has to wait. The timeline in section 4 shows this.
-- **On ⑤**: this point comes from Cursor's Mixture-of-Kittens. In a training setting (NVL72, EP64) they independently made the same choice, pull for dispatch and push for combine, for reasons that largely match ①, ④ and ⑤. Two teams reaching the same choice in different settings is more convincing than my reasoning alone.
+- **On ⑤**: this point comes from Cursor's Mixture-of-Kittens. In a training setting (NVL72, EP64) they independently made the same choice, pull for dispatch and push for combine, for reasons that largely match ①, ④ and ⑤.
 
 The table leads to one rule: **the direction of communication is decided by who knows the final address and who needs to control the pace.** When only the receiver can compute the final address and it wants data in the order it will compute, pull; when the sender already knows the final address, push. That is why both sides push in combine.
 
-One more point: pulling and fusion reinforce each other. Fusion is what makes the order of pulling matter; pulling in turn lets the receiver control the pace, so the buffer can be a small ring that is reused, which is what lets one kernel handle a large batch of tokens. In short, Mega MoE pulls data just in time to use it.
+In addition, pulling and fusion depend on each other. Fusion is what makes the order of pulling matter; pulling in turn lets the receiver control the pace, so the buffer can be a small ring that is reused, which is what lets one kernel handle a large batch of tokens.
 
 ## 3. Difference two: from scatter to gather
 
@@ -215,7 +215,7 @@ Mega MoE goes ① → ③; DeepEP goes ① → ② → ③.
 
 Gather has one requirement: you must be able to work out, from an output position, where the input is. The list and lengths in section 2 are the price paid for that.
 
-For DeepEP, the order in which blocks fill does not matter. Its consumer, DeepGEMM, is another kernel that cannot start until DeepEP has finished entirely, so nobody could use an early block anyway. DeepEP only needs the whole transfer to finish as soon as possible, which is exactly constraint ①.
+For DeepEP, the order in which blocks fill does not matter. Its consumer, DeepGEMM, is another kernel that cannot start until DeepEP has finished entirely, so a block that arrives early cannot be used early. DeepEP only needs the whole transfer to finish as soon as possible, which is exactly constraint ①.
 
 ### A small example
 
@@ -229,7 +229,7 @@ GPU 1 holds experts E0 and E1, and BLOCK_M = 2. Tokens on GPU 0: a picks E0, b p
 - Mega MoE pulls rows 0, 1, 2, 4, 5 in that order. E0's block 0 fills first and can be computed right away.
 - DeepEP's reorder scans ② in the order a, b, c, d, f, so E0's block 0 is not full until it reaches d. And which token comes first inside E0 depends on which atomic add wins.
 
-One more detail: within an expert, tokens from different source GPUs take turns (a, d, c rather than a, c, d). This is Mega MoE's round-robin rule ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L480-L528)). It doesn't decide which block fills first; it decides which GPU each block reads from, so that reads at any moment are spread across all source GPUs instead of piling onto one.
+In addition, within an expert, tokens from different source GPUs take turns (a, d, c rather than a, c, d). This is Mega MoE's round-robin rule ([source](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L480-L528)). It doesn't decide which block fills first; it decides which GPU each block reads from, so that reads at any moment are spread across all source GPUs instead of concentrating on one.
 
 This gives a more general lesson: **to let the consumer start as early as possible, organize the producer's loop in the order the consumer needs.** The same idea is behind output-stationary GEMM, where each thread block owns a fixed tile of the output.
 
@@ -332,16 +332,16 @@ This also explains why Mega MoE doesn't set aside a group of SMs just for pullin
 
 ## 5. Summary
 
-Looking back, almost every difference between Mega MoE and DeepEP is a facet of the same choice: **pay a little elsewhere so that data lands exactly where the computation needs it.**
+In summary, almost every difference between Mega MoE and DeepEP is a facet of the same choice: **pay a little elsewhere so that data lands exactly where the computation needs it.**
 
 - **Pull instead of push**: an extra serial count exchange, in return for data arriving in compute order;
 - **No per-GPU deduplication**: about 1.35× the NVLink traffic, in return for computing as soon as data lands, with no second expansion;
 - **Splitting work by warp inside each SM**: every SM gives up a little, in return for every tensor core doing work;
 - **A reused ring buffer**: the receiver has to control the pace, so it only works within an NVLink domain where peer memory is directly addressable.
 
-DeepEP doesn't do this not because it overlooked something, but because its consumer lives outside the kernel and it has to work across nodes, so blocks arriving early would do it no good. Both designs are sensible under their own constraints.
+DeepEP does not take this approach because its consumer lies outside the kernel and it must support cross-node communication, so blocks arriving early bring it no benefit. Both designs are sensible under their own constraints.
 
-A few questions remain open for me: why the epilogue warps are blocked at the start (the source comment only says it must not run alongside the barrier before pulling); whether the serial exchange at the start could be made cheaper; and how much each of these differences matters under decode and under prefill. For the last one, I plan to use "how many tokens each expert receives" in a follow-up post.
+Several questions remain open: why the epilogue warps are blocked at the start (the source comment only says it must not run alongside the barrier before pulling); whether the serial exchange at the start could be made cheaper; and how much each of these differences matters under decode and under prefill. The last question will be analyzed in a follow-up post, starting from the number of tokens each expert receives.
 
 ## References
 

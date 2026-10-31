@@ -16,17 +16,17 @@ MoE 的专家并行（EP）在每一层都做三件事：把 token 发到它选�
 
 DeepSeek 为这件事写了两套实现：
 
-- **DeepEP**：只管通信。dispatch 和 combine 各是一个 kernel，中间的矩阵乘交给 DeepGEMM。
+- **DeepEP**：只负责通信。dispatch 和 combine 各是一个 kernel，中间的矩阵乘交给 DeepGEMM。
 - **Mega MoE**（在 DeepGEMM 里）：把 dispatch、两层矩阵乘和 combine 放进同一个 kernel。
 
-读源码时我注意到一个细节：**DeepEP 的 dispatch 是发送方把数据推过去，Mega MoE 是接收方把数据拉过来；但 combine 两边都是推。** 这篇文章从这个细节出发，比较两套实现的异同，并回答它们为什么不同。
+两者之间有一个容易被忽略的差别：**DeepEP 的 dispatch 是发送方把数据推过去，Mega MoE 是接收方把数据拉过来；但 combine 两边都是推。** 本文从这一差别出发，比较两套实现的异同，并回答它们为什么不同。
 
 > 本文基于 DeepGEMM 和 DeepEP 的源码，讨论 Mega MoE 的 SM100 实现。举例时取 DeepSeek V4.1-Flash 的形状：256 个路由专家，每个 token 选 6 个，8 卡专家并行。
 
 ## TL;DR
 
 - **同一件事，两种做法。** DeepEP 的 dispatch 是发送方把 token 推过去，到了再重排；Mega MoE 是接收方先交换计数，再把 token 直接拉到矩阵乘要读的位置。combine 两边都是推。
-- **为什么只有 dispatch 反了：看写的那一刻，写方知不知道最终地址。** combine 的地址早已随 token 带到，所以推。dispatch 的最终位置要等所有卡的计数到齐才能算出：DeepEP 选择不等，先推后重排；Mega MoE 选择先等，再直接拉到位。
+- **为什么只有 dispatch 的方向相反：看写的那一刻，写方知不知道最终地址。** combine 的地址早已随 token 带到，所以推。dispatch 的最终位置要等所有卡的计数到齐才能算出：DeepEP 选择不等，先推后重排；Mega MoE 选择先等，再直接拉到位。
 - **拉的本质是从 scatter 变成 gather。** 拉取按矩阵的行号依次进行，行号小的块先满，矩阵乘可以边拉边算。但这只在通信和计算处于同一个 kernel 时才有价值，这正是 DeepEP 不这样做的原因。
 - **Mega MoE 用一点代价，换数据“直接落位”：** 多一段计数交换，多约 1.35 倍的 NVLink 流量，只能在 NVLink 域内使用；换来的是数据一到就落在计算要读的位置。
 
@@ -123,11 +123,11 @@ DeepSeek 为这件事写了两套实现：
 - 都要先交换计数，再做跨卡同步；
 - **combine 都是推。**
 
-有一处细节不同：发送的粒度。一个 token 选中的 6 个专家里，可能有几个在同一张卡上。DeepEP 按卡去重，同一张卡只发一份，到了再展开（[源码](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/dispatch.cuh#L102-L104)）。Mega MoE 不去重，每个“token–专家”对各占一行，同一张卡上的两个专家会把这个 token 拉两次（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L383-L390)）。按均匀路由算，DeepEP 平均每个 token 发 4.44 份，Mega MoE 发 6 份，Mega MoE 多用了约 1.35 倍的 NVLink 流量。后面会看到，这是 Mega MoE 为“拉到位就能算”付出的代价之一。
+有一处细节不同：发送的粒度。一个 token 选中的 6 个专家里，可能有几个在同一张卡上。DeepEP 按卡去重，同一张卡只发一份，到了再展开（[源码](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/dispatch.cuh#L102-L104)）。Mega MoE 不去重，每个“token–专家”对各占一行，同一张卡上的两个专家会把这个 token 拉两次（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L383-L390)）。按均匀路由算，DeepEP 平均每个 token 发 4.44 份，Mega MoE 发 6 份，Mega MoE 多用了约 1.35 倍的 NVLink 流量。后面会看到，这是 Mega MoE 为了让数据一到达就能参与计算而付出的代价之一。
 
 ## 二、不同之一：推与拉
 
-### 只有 dispatch 反了
+### 只有 dispatch 的方向相反
 
 DeepEP 的 combine 根据 dispatch 时记下的来源信息，把结果写回源卡（[源码](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/deep_ep/include/deep_ep/impls/ep/combine.cuh#L95-L107)）。Mega MoE 也是这样做的（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L1336-L1351)）。
 
@@ -153,11 +153,11 @@ DeepEP 的 combine 根据 dispatch 时记下的来源信息，把结果写回源
 
 两样缺一不可。没有名单，目标卡不知道去哪里读；没有长度，目标卡不知道读到哪里为止，也不知道源卡是否写完。之后所有卡再做一次跨卡同步，才开始拉。
 
-这是拉要付的代价：数据还没开始动，就先多了一段必须串行完成的交换。按源码注释，其中计数约 6.5 us，写名单约 2 us（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L374-L383)）。
+这是拉取的代价：在数据传输开始之前，必须先串行完成这段交换。按源码注释，其中计数约 6.5 us，写名单约 2 us（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L374-L383)）。
 
 ### 五个约束：为什么两边各自都对
 
-两种设计都不是绝对更好，而是在各自的约束下都合理。我归纳出五点：
+两种设计都不是绝对更好，而是在各自的约束下都合理。可以归纳为五点：
 
 1. Mega MoE 集成了计算，DeepEP 只负责通信；
 2. Mega MoE 还要算 shared expert，可以趁等计数的时候先算；
@@ -178,11 +178,11 @@ DeepEP 的 combine 根据 dispatch 时记下的来源信息，把结果写回源
 两点补充：
 
 - **关于 ②**：shared expert 只能填满这段空隙的一部分。负责收尾处理（epilogue）的 warp 一开始要等 dispatch 通过第一次跨卡同步（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L977)），而存放矩阵乘结果的 TMEM 只有 2 份（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L177)）。所以每个 SM 在空隙里最多只能先算 2 个 shared expert 任务，之后就得等。第四节的时间线里能看到这一点。
-- **关于 ⑤**：这一条来自 Cursor 的 Mixture-of-Kittens。他们在训练场景（NVL72，EP64）里独立做出了同样的选择：dispatch 拉，combine 推，理由和 ①④⑤ 基本一致。两个团队在不同场景下得出同一个选择，这比我一个人的推理更有说服力。
+- **关于 ⑤**：这一条来自 Cursor 的 Mixture-of-Kittens。他们在训练场景（NVL72，EP64）里独立做出了同样的选择：dispatch 拉，combine 推，理由与 ①④⑤ 基本一致。
 
 由这张表可以得到一条规律：**通信方向由“谁知道最终地址”和“谁需要控制节奏”决定。** 最终地址只有接收方能算出来、而且接收方要按自己的计算顺序取数时，用拉；发送方已经知道最终地址时，用推。所以两边的 combine 都是推。
 
-还要补一句：拉和融合是互相成就的。融合让“按什么顺序拉”有了意义；拉又让接收方能控制节奏，缓冲区可以做成循环复用的有限大小，一个 kernel 才吃得下大批 token。用四个字概括 Mega MoE，就是“急拉急用”。
+此外，拉取与融合相互依存。融合让“按什么顺序拉”有了意义；拉又让接收方能控制节奏，缓冲区可以做成循环复用的有限大小，一个 kernel 才能容纳大批 token。
 
 ## 三、不同之二：从 scatter 到 gather
 
@@ -215,7 +215,7 @@ Mega MoE 走 ① → ③，DeepEP 走 ① → ② → ③。
 
 gather 有一个前提：要能从输出的位置反推出输入在哪里。第二节说的名单和长度，就是为这个前提付的代价。
 
-对 DeepEP 来说，块按什么顺序满并不重要。它的下游 DeepGEMM 是另一个 kernel，要等 DeepEP 全部结束才能开始，哪一块先到齐都没人能提前用。所以 DeepEP 只需要让整次搬运尽早结束，这正是约束 ①。
+对 DeepEP 来说，块按什么顺序满并不重要。它的下游 DeepGEMM 是另一个 kernel，要等 DeepEP 全部结束才能开始，即使某一块提前到齐，也无法被提前使用。所以 DeepEP 只需要让整次搬运尽早结束，这正是约束 ①。
 
 ### 一个小例子
 
@@ -227,9 +227,9 @@ gather 有一个前提：要能从输出的位置反推出输入在哪里。第�
 | 块 | E0 第 0 块 | E0 第 0 块 | E0 第 1 块 | E0 第 1 块 | E1 第 0 块 | E1 第 0 块 |
 
 - Mega MoE 按行 0、1、2、4、5 的顺序拉，E0 的第 0 块最先满，可以马上开始算。
-- DeepEP 重排时按 ② 的顺序扫 a、b、c、d、f，E0 的第 0 块要扫到 d 才满。而且 E0 内部谁排前面，取决于原子加谁先抢到。
+- DeepEP 重排时按 ② 的顺序扫 a、b、c、d、f，E0 的第 0 块要扫到 d 才满。而且 E0 内部谁排前面，取决于各次原子操作的先后。
 
-还有一个细节：同一个专家里，来自不同源卡的 token 是轮流排的（a、d、c，而不是 a、c、d）。这是 Mega MoE 的轮转规则（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L480-L528)）。它决定的不是哪一块先满，而是每一块去哪张卡读：让同一时刻的读请求分散到所有源卡上，不会全挤在一张卡上。
+此外，同一个专家内部，来自不同源卡的 token 是轮流排的（a、d、c，而不是 a、c、d）。这是 Mega MoE 的轮转规则（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L480-L528)）。它决定的不是哪一块先满，而是每一块去哪张卡读：让同一时刻的读请求分散到所有源卡上，避免集中到某一张卡上。
 
 由此可以得到一条更一般的经验：**想让下游尽早开工，就按下游需要的顺序来组织上游的循环。** GEMM 里每个线程块负责一块固定输出（output-stationary），也是同样的道理。
 
@@ -242,14 +242,14 @@ gather 有一个前提：要能从输出的位置反推出输入在哪里。第�
 | 分工方式 | 例子 | 闲置放在哪里 |
 |---|---|---|
 | 按时间分：一个 kernel 做完再做下一个 | DeepEP dispatch → DeepGEMM → DeepEP combine | 通信时 tensor core 全闲，计算时 NVLink 全闲 |
-| 按 SM 分：一部分 SM 通信，一部分 SM 计算 | DeepEP 的 combine 与 shared expert 同时跑时，DeepEP 只占一部分 SM（DeepInfer 的上限是 `min(理论值, 总数 − min(32, 总数//4))`，[源码](https://github.com/deepseek-ai/DeepInfer/blob/9bd9cf243fc53ef9afbf8f04d391d989117d6ab9/deepinfer/model_executor/parallel_utils/userbuffer.py#L40-L51)）；Cursor 的 MoK 也划出专门的通信 SM | 通信 SM 上的 tensor core 一直闲着；比例固定，需要调 |
-| 在 SM 内按 warp 分 | Mega MoE：每个 SM 有 4 个拉取 warp、4 个 GEMM 相关 warp（两个搬数据、一个发矩阵乘指令、一个调度）、8 个收尾 warp | 分摊到每个 SM，而且会闲着的角色只占很少的资源 |
+| 按 SM 分：一部分 SM 通信，一部分 SM 计算 | DeepEP 的 combine 与 shared expert 同时跑时，DeepEP 只占一部分 SM（DeepInfer 的上限是 `min(理论值, 总数 − min(32, 总数//4))`，[源码](https://github.com/deepseek-ai/DeepInfer/blob/9bd9cf243fc53ef9afbf8f04d391d989117d6ab9/deepinfer/model_executor/parallel_utils/userbuffer.py#L40-L51)）；Cursor 的 MoK 也划出专门的通信 SM | 通信 SM 上的 tensor core 始终空闲；比例固定，需要调 |
+| 在 SM 内按 warp 分 | Mega MoE：每个 SM 有 4 个拉取 warp、4 个 GEMM 相关 warp（两个加载数据、一个发射矩阵乘指令、一个调度）、8 个收尾 warp | 分摊到每个 SM，且会空闲的角色只占很少的资源 |
 
 注意，“在 SM 内分工”并不意味着一个 SM 拉来的 token 就由这个 SM 来算。拉取 warp 拉完一个 token，更新的是全局计数器（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L613)），由哪个 SM 来算这一块，是调度器动态决定的（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh#L344-L370)）。两种分工方式都要通过全局计数器交接。真正的区别在于**资源怎么切、闲置放在哪里**。
 
 ### Mega MoE 的资源账
 
-**寄存器**：拉取 warp 每个线程 48 个，GEMM 相关 warp 40 个，收尾 warp 208 个（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L328-L331)）。加起来 128×48 + 128×40 + 256×208 = 64512，正好用满整个寄存器堆（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L332-L335)）。
+**寄存器**：拉取 warp 每个线程 48 个，GEMM 相关 warp 40 个，收尾 warp 208 个（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L328-L331)）。加起来 128×48 + 128×40 + 256×208 = 64512，恰好用满整个寄存器堆（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L332-L335)）。
 
 **共享内存**：拉取要占约 17 KB，包括专家计数 1 KB 和 4 个 warp 各 4 KB 的中转缓冲。而 GEMM 每多一级流水大约要 19.5 KB（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/csrc/jit_kernels/heuristics/mega_moe.hpp#L179-L184)，按 BLOCK_M = 32 算），所以拉取大约占掉了一级流水。
 
@@ -323,25 +323,25 @@ gather 有一个前提：要能从输出的位置反推出输入在哪里。第�
 
 - **拉取 warp**：先交换计数（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L368-L428)），再按矩阵行号的顺序拉取（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L449-L619)）。拉完后停下来，等所有第二层的结果写完（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L623)），最后清理工作区并做第二次跨卡同步，这一段和 combine 同时进行（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L621-L689)）。
 - **调度 warp**：先安排 shared expert 的第一层（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh#L445-L452)），等计数到齐（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh#L455)），再安排各专家的第一层，之后两层交替。
-- **搬数据和发矩阵乘指令的 warp**：有任务就做；调度结束后，整个 combine 阶段都闲着。
+- **加载数据和发射矩阵乘指令的 warp**：有任务就执行；调度结束后，在整个 combine 阶段处于空闲。
 - **收尾 warp**：开头被挡住（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L977)），之后处理两层矩阵乘的结果，最后变成 combine warp，负责求和（[源码](https://github.com/deepseek-ai/DeepGEMM/blob/5081f8513af57e61696de4f4f04b0e707ffb503e/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L1365) 起）。
 
-每类 warp 都有一段是闲着的：拉取 warp 在收尾阶段，GEMM 相关的 warp 在 combine 阶段，收尾 warp 在开头。Mega MoE 能接受这些闲置，是因为会闲着的角色只占很少的资源，而最吃资源的收尾 warp 从开始计算到最后几乎一直在忙。同一个 warp 还会随时间换工作：收尾 warp 后来去做 combine，拉取 warp 后来去做清理。
+每类 warp 都有一段空闲期：拉取 warp 在收尾阶段，GEMM 相关的 warp 在 combine 阶段，收尾 warp 在开头。Mega MoE 能接受这些闲置，是因为会空闲的角色只占用很少的资源，而最吃资源的收尾 warp 从开始计算到最后几乎一直在忙。同一个 warp 还会随时间换工作：收尾 warp 后来去做 combine，拉取 warp 后来去做清理。
 
-这也回答了 Mega MoE 为什么不单独划一批 SM 来拉取：那样的话，闲着的就是整个 SM，包括它的 tensor core 和全部寄存器。
+这也回答了 Mega MoE 为什么不单独划一批 SM 来拉取：那样的话，空闲的将是整个 SM，包括它的 tensor core 和全部寄存器。
 
 ## 五、小结
 
-回头看，Mega MoE 和 DeepEP 的每一处不同，几乎都是同一个选择的不同侧面：**用一点别的代价，换数据直接落在计算需要的位置。**
+综上，Mega MoE 与 DeepEP 的各处差异，几乎都是同一个选择的不同侧面：**用一点别的代价，换数据直接落在计算需要的位置。**
 
 - **拉而不推**：多一段串行的计数交换，换来数据按计算顺序到达；
-- **不按卡去重**：多用约 1.35 倍的 NVLink 流量，换来拉到位就能算，不必再展开一次；
+- **不按卡去重**：多用约 1.35 倍的 NVLink 流量，换来数据一到达就能计算，无需再次展开；
 - **在 SM 内按 warp 分工**：每个 SM 都让出一点资源，换来所有 tensor core 都在算；
 - **循环复用的缓冲区**：要求接收方自己控制节奏，所以只能在能直接访问对端显存的 NVLink 域内使用。
 
-DeepEP 不这样做，不是因为考虑不周，而是它的下游在 kernel 之外，它还要支持跨节点，“按块到达”对它没有价值。两种设计都是在各自约束下的合理选择。
+DeepEP 没有采用这种做法，原因在于它的下游位于 kernel 之外，并且需要支持跨节点通信，“按块到达”对它没有价值。两种设计都是在各自约束下的合理选择。
 
-还有几个问题我没有弄清楚：收尾 warp 为什么一开始要被挡住（源码注释只说“不能和拉取前的同步同时进行”）；开头那段串行交换能不能做得更便宜；以及上面这些差异在 decode 和 prefill 两种负载下分别有多重要。最后一个问题，我打算下一篇用“每个专家分到多少 token”来分析。
+仍有几个问题有待厘清：收尾 warp 为什么在开头被阻塞（源码注释只说明它不能与拉取前的同步同时进行）；开头的串行交换能否进一步压缩；以及上述差异在 decode 与 prefill 两种负载下各自的影响有多大。最后一个问题将在后续文章中，以“每个专家分到的 token 数”为切入点展开分析。
 
 ## 参考
 
