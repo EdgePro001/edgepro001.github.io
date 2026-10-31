@@ -47,7 +47,7 @@ DeepSeek 为这件事写了两套实现：
 4. **combine**：第二层算完，直接把结果**推**回源卡，源卡在本地求和。
 
 <figure style="margin:1.8em 0">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" role="img" aria-label="Dispatch: DeepEP pushes, Mega MoE pulls" style="width:100%;height:auto;display:block;font-family:'Spectral',Georgia,serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 0 724 300" role="img" aria-label="Dispatch: DeepEP pushes, Mega MoE pulls" style="width:100%;height:auto;display:block;font-family:'Spectral',Georgia,serif">
 <style>
 .mm1-lane{fill:var(--text);font-size:15.5px;font-style:italic}
 .mm1-node{fill:var(--note-bg);stroke:var(--note-border);stroke-width:1.2}

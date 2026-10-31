@@ -47,7 +47,7 @@ While reading the source I noticed one detail: **in DeepEP's dispatch, the sende
 4. **Combine**: when the second layer finishes, its results are **pushed** straight back to the source GPU, which sums them locally.
 
 <figure style="margin:1.8em 0">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" role="img" aria-label="Dispatch: DeepEP pushes, Mega MoE pulls" style="width:100%;height:auto;display:block;font-family:'Spectral',Georgia,serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 0 724 300" role="img" aria-label="Dispatch: DeepEP pushes, Mega MoE pulls" style="width:100%;height:auto;display:block;font-family:'Spectral',Georgia,serif">
 <style>
 .mm1-lane{fill:var(--text);font-size:15.5px;font-style:italic}
 .mm1-node{fill:var(--note-bg);stroke:var(--note-border);stroke-width:1.2}
