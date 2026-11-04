@@ -10,6 +10,8 @@ category: technical
 
 <link rel="stylesheet" href="/blog/fused-indextopk/article.css" />
 
+[English version](/blog/deepep-dispatch-move-count-en/)
+
 MoE 的专家并行（EP）每一层都要做一次 all-to-all，把 token 发到它选中的专家所在的卡上，这一步叫 dispatch。这次 all-to-all 和常见的有一点不同：接收方事先不知道自己会收到多少数据。`MPI_Alltoallv` 要求接收方在调用时就知道每个来源发多少，而 MoE 的路由要等 gate 打完分才确定，每层、每一步都可能不一样。
 
 DeepEP 处理这个问题有四种做法：V1 的普通模式和低延迟模式，V2 的 direct 和 hybrid。本文先介绍它们面对的条件，再逐一讲这四种做法，最后用官方数据把差别换算成通信时间。
